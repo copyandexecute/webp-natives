@@ -1,0 +1,13 @@
+.gradle/
+build/
+.idea/
+*.iml
+out/
+.kotlin/
+local.properties
+
+# CMake build outputs
+**/build/native/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
