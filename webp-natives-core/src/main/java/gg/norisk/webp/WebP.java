@@ -71,6 +71,17 @@ public final class WebP {
         return img;
     }
 
+    /**
+     * Open an animated WEBP for frame-by-frame decoding. Accepts both
+     * animated and static streams (static decodes as a 1-frame animation).
+     *
+     * <p>The returned decoder owns native resources — close it with
+     * try-with-resources or {@link WebPAnimDecoder#close()}.
+     */
+    public static WebPAnimDecoder decodeAnimated(byte[] data) throws WebPException {
+        return WebPAnimDecoder.open(data);
+    }
+
     // ─────────────────────────────────────────────────────────────────
     //  Encode
     // ─────────────────────────────────────────────────────────────────

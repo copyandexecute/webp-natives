@@ -56,4 +56,39 @@ public final class WebPNative {
 
     /** Fallback encode from a row-major RGBA byte buffer. */
     public static native byte[] encodeRGBA(byte[] rgba, int width, int height, float quality, boolean lossless, int method, float losslessQuality);
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Animated WEBP decode — handle-based lifecycle.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Open an animated WEBP decoder.
+     *
+     * @param data WEBP bytes (animated or static — static is treated as
+     *             a 1-frame animation)
+     * @return opaque native handle, or 0 on failure
+     */
+    public static native long animDecoderOpen(byte[] data);
+
+    /**
+     * @return {@code {canvasWidth, canvasHeight, loopCount, bgcolor, frameCount}}
+     *         or {@code null} on failure. {@code bgcolor} is RGBA packed as ARGB int.
+     */
+    public static native int[] animDecoderGetInfo(long handle);
+
+    /** @return {@code true} if there are more frames left to read. */
+    public static native boolean animDecoderHasMoreFrames(long handle);
+
+    /**
+     * Decode the next frame into {@code outPixels} (TYPE_INT_ARGB backing).
+     *
+     * @return end-timestamp of the decoded frame in ms, or -1 on failure
+     */
+    public static native int animDecoderNextFrame(long handle, int[] outPixels);
+
+    /** Restart iteration from frame 0 (e.g. for looped playback). */
+    public static native void animDecoderReset(long handle);
+
+    /** Free all native resources. Safe to call multiple times. */
+    public static native void animDecoderClose(long handle);
 }

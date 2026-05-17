@@ -27,6 +27,7 @@
 
 #include "webp/decode.h"
 #include "webp/encode.h"
+#include "webp/demux.h"
 
 /* Compile-time assertion that we're on a little-endian target. libwebp's
  * MODE_BGRA writes bytes in memory as [B][G][R][A]; a Java int read out of
@@ -370,4 +371,162 @@ Java_gg_norisk_webp_internal_WebPNative_encodeRGBA(JNIEnv* env, jclass cls,
     (*env)->SetByteArrayRegion(env, result, 0, (jsize) writer.size, (const jbyte*) writer.mem);
     WebPMemoryWriterClear(&writer);
     return result;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ *  Animated WEBP decode (libwebpdemux)
+ *
+ *  The native handle wraps both the libwebp decoder AND a malloc'd copy
+ *  of the input bytes — WebPAnimDecoder reads from its `WebPData` lazily
+ *  during GetNext, so the underlying buffer must outlive the decoder.
+ *
+ *  Lifecycle: animDecoderOpen → animDecoderGetInfo → animDecoderHasMoreFrames
+ *  / animDecoderNextFrame loop → animDecoderClose. animDecoderReset can be
+ *  called at any time to restart iteration from frame 0 (e.g. for looped
+ *  playback).
+ * ────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    WebPAnimDecoder* decoder;
+    uint8_t*         data;     /* owned: malloc'd copy of jbyteArray contents */
+    size_t           dataLen;
+} AnimDecoderHandle;
+
+JNIEXPORT jlong JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderOpen(JNIEnv* env, jclass cls, jbyteArray data) {
+    (void) cls;
+    if (data == NULL) return 0;
+    jsize len = (*env)->GetArrayLength(env, data);
+    if (len <= 0) return 0;
+
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) malloc(sizeof(AnimDecoderHandle));
+    if (handle == NULL) return 0;
+    handle->decoder = NULL;
+    handle->data    = (uint8_t*) malloc((size_t) len);
+    handle->dataLen = (size_t) len;
+    if (handle->data == NULL) {
+        free(handle);
+        return 0;
+    }
+
+    /* Copy bytes once, decoder reads from this buffer over its lifetime. */
+    (*env)->GetByteArrayRegion(env, data, 0, len, (jbyte*) handle->data);
+
+    WebPAnimDecoderOptions opts;
+    if (!WebPAnimDecoderOptionsInit(&opts)) {
+        free(handle->data);
+        free(handle);
+        return 0;
+    }
+    opts.color_mode  = MODE_BGRA;  /* matches BufferedImage.TYPE_INT_ARGB on LE */
+    opts.use_threads = 1;
+
+    WebPData webpData;
+    webpData.bytes = handle->data;
+    webpData.size  = handle->dataLen;
+
+    handle->decoder = WebPAnimDecoderNew(&webpData, &opts);
+    if (handle->decoder == NULL) {
+        free(handle->data);
+        free(handle);
+        return 0;
+    }
+    return (jlong) (intptr_t) handle;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderGetInfo(JNIEnv* env, jclass cls, jlong handlePtr) {
+    (void) cls;
+    if (handlePtr == 0) return NULL;
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) (intptr_t) handlePtr;
+    if (handle->decoder == NULL) return NULL;
+
+    WebPAnimInfo info;
+    if (!WebPAnimDecoderGetInfo(handle->decoder, &info)) return NULL;
+
+    jintArray result = (*env)->NewIntArray(env, 5);
+    if (result == NULL) return NULL;
+    /* canvas_width, canvas_height, loop_count, bgcolor, frame_count */
+    jint vals[5] = {
+        (jint) info.canvas_width,
+        (jint) info.canvas_height,
+        (jint) info.loop_count,
+        (jint) info.bgcolor,
+        (jint) info.frame_count,
+    };
+    (*env)->SetIntArrayRegion(env, result, 0, 5, vals);
+    return result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderHasMoreFrames(JNIEnv* env, jclass cls, jlong handlePtr) {
+    (void) cls;
+    if (handlePtr == 0) return JNI_FALSE;
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) (intptr_t) handlePtr;
+    if (handle->decoder == NULL) return JNI_FALSE;
+    return WebPAnimDecoderHasMoreFrames(handle->decoder) ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * Decode the next frame into the caller-supplied int[] (TYPE_INT_ARGB
+ * backing — see decodeARGBInto for the BGRA-on-LE trick).
+ *
+ * @return end-timestamp of this frame in milliseconds (caller computes
+ *         duration as ts_n - ts_(n-1)), or -1 on failure.
+ */
+JNIEXPORT jint JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderNextFrame(JNIEnv* env, jclass cls,
+                                                              jlong handlePtr,
+                                                              jintArray outPixels) {
+    (void) cls;
+    if (handlePtr == 0 || outPixels == NULL) return -1;
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) (intptr_t) handlePtr;
+    if (handle->decoder == NULL) return -1;
+
+    WebPAnimInfo info;
+    if (!WebPAnimDecoderGetInfo(handle->decoder, &info)) return -1;
+    const jsize needed = (jsize) info.canvas_width * (jsize) info.canvas_height;
+    if ((*env)->GetArrayLength(env, outPixels) < needed) return -1;
+
+    uint8_t* frameBuf = NULL;
+    int timestamp = 0;
+    if (!WebPAnimDecoderGetNext(handle->decoder, &frameBuf, &timestamp)) return -1;
+    if (frameBuf == NULL) return -1;
+
+    /* The decoder owns frameBuf and reuses it across GetNext calls, so
+     * we must copy out before any subsequent call. On LE the BGRA bytes
+     * coincide with ARGB int values for BufferedImage.TYPE_INT_ARGB. */
+    jint* pixels = (jint*) (*env)->GetPrimitiveArrayCritical(env, outPixels, NULL);
+    if (pixels == NULL) return -1;
+    memcpy(pixels, frameBuf, (size_t) needed * 4);
+    (*env)->ReleasePrimitiveArrayCritical(env, outPixels, pixels, 0);
+
+    return (jint) timestamp;
+}
+
+JNIEXPORT void JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderReset(JNIEnv* env, jclass cls, jlong handlePtr) {
+    (void) env;
+    (void) cls;
+    if (handlePtr == 0) return;
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) (intptr_t) handlePtr;
+    if (handle->decoder == NULL) return;
+    WebPAnimDecoderReset(handle->decoder);
+}
+
+JNIEXPORT void JNICALL
+Java_gg_norisk_webp_internal_WebPNative_animDecoderClose(JNIEnv* env, jclass cls, jlong handlePtr) {
+    (void) env;
+    (void) cls;
+    if (handlePtr == 0) return;
+    AnimDecoderHandle* handle = (AnimDecoderHandle*) (intptr_t) handlePtr;
+    if (handle->decoder != NULL) {
+        WebPAnimDecoderDelete(handle->decoder);
+        handle->decoder = NULL;
+    }
+    if (handle->data != NULL) {
+        free(handle->data);
+        handle->data = NULL;
+    }
+    free(handle);
 }

@@ -65,7 +65,7 @@ target_include_directories(webp_natives PRIVATE
     "${JAVA_HOME}/include/linux"
 )
 
-target_link_libraries(webp_natives PRIVATE webp)
+target_link_libraries(webp_natives PRIVATE webp webpdemux)
 
 # Strip unneeded symbols to keep the .so small (saves ~30% on stripped builds).
 set_target_properties(webp_natives PROPERTIES

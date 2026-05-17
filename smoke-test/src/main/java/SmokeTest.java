@@ -118,6 +118,47 @@ public class SmokeTest {
             System.out.println("[8] validation: rejected losslessQuality=101 as expected");
         }
 
+        // Animated decoder smoke-check: open static WEBP as a 1-frame anim,
+        // verify info + iterator yields exactly one frame with matching pixels.
+        try (gg.norisk.webp.WebPAnimDecoder anim = gg.norisk.webp.WebP.decodeAnimated(lossless)) {
+            gg.norisk.webp.WebPAnimInfo animInfo = anim.info();
+            System.out.println("[9] anim info: " + animInfo);
+            if (animInfo.canvasWidth() != 64 || animInfo.canvasHeight() != 64) {
+                System.err.println("FAIL — anim dims " + animInfo.canvasWidth() + "x" + animInfo.canvasHeight() + " ≠ 64x64");
+                System.exit(1);
+            }
+            if (animInfo.frameCount() != 1) {
+                System.err.println("FAIL — static WEBP should report frameCount=1, got " + animInfo.frameCount());
+                System.exit(1);
+            }
+
+            int frameSeen = 0;
+            int animMm = 0;
+            for (gg.norisk.webp.WebPAnimFrame frame : anim) {
+                frameSeen++;
+                BufferedImage f = frame.image();
+                for (int y = 0; y < 64; y++) {
+                    for (int x = 0; x < 64; x++) {
+                        if (img.getRGB(x, y) != f.getRGB(x, y)) animMm++;
+                    }
+                }
+            }
+            System.out.println("[9] anim frames iterated:      " + frameSeen);
+            System.out.println("[9] anim pixel mismatches:     " + animMm + " / 4096");
+            if (frameSeen != 1 || animMm != 0) {
+                System.err.println("FAIL — anim decode didn't roundtrip");
+                System.exit(1);
+            }
+
+            // reset() should let us read the same frame again
+            anim.reset();
+            if (!anim.hasMoreFrames()) {
+                System.err.println("FAIL — reset() should restore frame availability");
+                System.exit(1);
+            }
+            System.out.println("[9] reset() then hasMoreFrames(): true");
+        }
+
         System.out.println("\nALL CHECKS PASSED.");
     }
 }

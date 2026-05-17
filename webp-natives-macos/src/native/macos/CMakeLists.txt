@@ -81,7 +81,7 @@ target_include_directories(webp_natives PRIVATE
     "${JAVA_HOME}/include/darwin"
 )
 
-target_link_libraries(webp_natives PRIVATE webp)
+target_link_libraries(webp_natives PRIVATE webp webpdemux)
 
 set_target_properties(webp_natives PROPERTIES
     OUTPUT_NAME "webp_natives"
