@@ -101,7 +101,7 @@ jobs:
           path: webp-natives-linux/build/resources/main/native/linux/x64/
           if-no-files-found: error
 
-  natives-linux-aarch64:
+  natives-linux-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -114,14 +114,14 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Build Linux aarch64 .so
-        run: ./gradlew :webp-natives-linux:copyLinuxSoAarch64 --no-daemon
+      - name: Build Linux arm64 .so
+        run: ./gradlew :webp-natives-linux:copyLinuxSoArm64 --no-daemon
 
-      - name: Upload Linux aarch64 native
+      - name: Upload Linux arm64 native
         uses: actions/upload-artifact@v4
         with:
-          name: natives-linux-aarch64
-          path: webp-natives-linux/build/resources/main/native/linux/aarch64/
+          name: natives-linux-arm64
+          path: webp-natives-linux/build/resources/main/native/linux/arm64/
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ jobs:
   #  Assemble + publish
   # ─────────────────────────────────────────────────────────────────
   publish:
-    needs: [natives-windows-x64, natives-windows-arm64, natives-linux-x64, natives-linux-aarch64, natives-macos]
+    needs: [natives-windows-x64, natives-windows-arm64, natives-linux-x64, natives-linux-arm64, natives-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,11 +198,11 @@ jobs:
           name: natives-linux-x64
           path: webp-natives-linux/src/main/resources/native/linux/x64/
 
-      - name: Download Linux aarch64 native
+      - name: Download Linux arm64 native
         uses: actions/download-artifact@v4
         with:
-          name: natives-linux-aarch64
-          path: webp-natives-linux/src/main/resources/native/linux/aarch64/
+          name: natives-linux-arm64
+          path: webp-natives-linux/src/main/resources/native/linux/arm64/
 
       - name: Download macOS x64 native
         uses: actions/download-artifact@v4

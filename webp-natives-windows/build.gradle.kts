@@ -12,7 +12,11 @@ val nativeWindowsDir = layout.projectDirectory.dir("src/native/windows")
 
 /** Shared JNI C source — lives in core so linux/macos can reuse it. */
 val sharedJniSource = rootProject.file("webp-natives-core/src/native/webp_jni.c")
-val jniSrcWin = sharedJniSource.absolutePath.replace("/", "\\")
+// Forward slashes: CMake parses backslashes as escape sequences, and a
+// path like D:\a\webp-natives\... (GitHub runner working dir) trips on
+// the \a (alert/bell) escape. CMake accepts forward slashes on Windows
+// just fine, so we normalise once here.
+val jniSrcWin = sharedJniSource.absolutePath.replace("\\", "/")
 
 // JAVA_HOME for CMake — must point at a JDK (not a JRE) so jni.h is reachable.
 // Resolve via JavaToolchainService rather than the running gradle daemon's

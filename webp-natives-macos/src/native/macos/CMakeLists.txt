@@ -31,6 +31,14 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Xcode 16's SDK math.h declares `extern _Float16 __fabsf16(...)` style
+# prototypes (macOS 15+). Apple Clang's x86_64 target doesn't recognise
+# `_Float16` (requires AVX512-FP16), so the x86_64 slice of the universal
+# build fails to even parse <math.h>. libwebp never actually calls those
+# functions — alias the type to plain float so the declarations parse
+# without changing runtime behaviour.
+add_compile_options(-D_Float16=float)
+
 # ─────────────────────────────────────────────────────────────────
 #  libwebp dependency — same trimmed config as windows/linux.
 # ─────────────────────────────────────────────────────────────────

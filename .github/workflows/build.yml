@@ -37,7 +37,7 @@ jobs:
           - { runner: windows-latest,   label: "windows / x64",    module: webp-natives-windows, artifact: native-windows-x64,     resource-glob: "webp-natives-windows/build/resources/main/native/**" }
           - { runner: windows-11-arm,   label: "windows / arm64",  module: webp-natives-windows, artifact: native-windows-arm64,   resource-glob: "webp-natives-windows/build/resources/main/native/**" }
           - { runner: ubuntu-latest,    label: "linux / x64",      module: webp-natives-linux,   artifact: native-linux-x64,       resource-glob: "webp-natives-linux/build/resources/main/native/**" }
-          - { runner: ubuntu-24.04-arm, label: "linux / aarch64",  module: webp-natives-linux,   artifact: native-linux-aarch64,   resource-glob: "webp-natives-linux/build/resources/main/native/**" }
+          - { runner: ubuntu-24.04-arm, label: "linux / arm64",    module: webp-natives-linux,   artifact: native-linux-arm64,     resource-glob: "webp-natives-linux/build/resources/main/native/**" }
           # macos-latest is currently arm64. The dylib is a universal
           # binary (x86_64 + arm64 fat file) — Mac x64 hosts also get
           # the same artifact.

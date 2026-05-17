@@ -74,16 +74,19 @@ fun registerLinuxArchBuild(arch: String, cmakeFlags: List<String> = emptyList())
 val copyLinuxSoX64 = registerLinuxArchBuild("x64")
 // aarch64 build is wired but only runs on an aarch64 host (or with a
 // cross-toolchain in place — CI runs it on an ubuntu-24.04-arm runner).
-val copyLinuxSoAarch64 = registerLinuxArchBuild("aarch64")
+// Use "arm64" (not "aarch64") for the resource-dir name so the path
+// matches NativeLoader.detectArch(), which maps both os.arch values to
+// "arm64" for cross-platform consistency with macos/windows.
+val copyLinuxSoArm64 = registerLinuxArchBuild("arm64")
 
 tasks.register("copyLinuxSos") {
-    dependsOn(copyLinuxSoX64, copyLinuxSoAarch64)
+    dependsOn(copyLinuxSoX64, copyLinuxSoArm64)
 }
 
 tasks.register<Delete>("cmakeClean") {
     delete(
         layout.buildDirectory.dir("native/linux-x64"),
-        layout.buildDirectory.dir("native/linux-aarch64")
+        layout.buildDirectory.dir("native/linux-arm64")
     )
 }
 
@@ -92,7 +95,7 @@ tasks.named("processResources") {
         // The matching arch is the host arch — pick by uname.
         val arch = System.getProperty("os.arch").lowercase()
         if (arch.contains("aarch64") || arch.contains("arm64")) {
-            dependsOn(copyLinuxSoAarch64)
+            dependsOn(copyLinuxSoArm64)
         } else {
             dependsOn(copyLinuxSoX64)
         }
