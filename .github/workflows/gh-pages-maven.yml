@@ -127,9 +127,33 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   #  Build macOS dylib (universal x86_64 + arm64) via CMake + clang
   # ─────────────────────────────────────────────────────────────────
-  natives-macos:
-    # macos-14 = Apple Silicon + Xcode 15. macos-15/macos-latest ships Xcode
-    # 16 whose SDK math.h trips libwebp's x86_64 universal-binary build.
+  natives-macos-x64:
+    # Intel runner: builds x86_64 dylib only. Universal builds break
+    # libwebp 1.6.0's SSE2 per-file flags, so we build each arch on its
+    # native host instead.
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Build macOS x86_64 dylib
+        run: ./gradlew :webp-natives-macos:copyMacosDylibX64 --no-daemon
+
+      - name: Upload macOS x64 native
+        uses: actions/upload-artifact@v4
+        with:
+          name: natives-macos-x64
+          path: webp-natives-macos/build/resources/main/native/macos/x64/
+          if-no-files-found: error
+
+  natives-macos-arm64:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -142,15 +166,8 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Build macOS universal dylib
-        run: ./gradlew :webp-natives-macos:copyMacosDylibs --no-daemon
-
-      - name: Upload macOS x64 native
-        uses: actions/upload-artifact@v4
-        with:
-          name: natives-macos-x64
-          path: webp-natives-macos/build/resources/main/native/macos/x64/
-          if-no-files-found: error
+      - name: Build macOS arm64 dylib
+        run: ./gradlew :webp-natives-macos:copyMacosDylibArm64 --no-daemon
 
       - name: Upload macOS arm64 native
         uses: actions/upload-artifact@v4
@@ -163,7 +180,7 @@ jobs:
   #  Assemble + publish
   # ─────────────────────────────────────────────────────────────────
   publish:
-    needs: [natives-windows-x64, natives-windows-arm64, natives-linux-x64, natives-linux-arm64, natives-macos]
+    needs: [natives-windows-x64, natives-windows-arm64, natives-linux-x64, natives-linux-arm64, natives-macos-x64, natives-macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write

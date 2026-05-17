@@ -21,71 +21,77 @@ val jdkLauncher = javaToolchains.launcherFor {
 }
 val gradleJavaHome = jdkLauncher.map { it.metadata.installationPath.asFile.absolutePath }
 
+fun String.capitalize(): String = replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
 /**
- * One universal binary (x86_64 + arm64 fat dylib) — CMake's
- * CMAKE_OSX_ARCHITECTURES handles the multi-arch link, no per-arch
- * task needed. Then the single dylib gets copied into both
- * /native/macos/x64/ and /native/macos/arm64/ so the runtime
- * NativeLoader (which looks under <os>/<arch>/) finds the same file
- * regardless of the host architecture.
+ * Register cmake configure + build + copy tasks for one macOS arch.
+ *
+ * @param arch "x64" or "arm64" — appears in the output resource path
+ * @param osxArch the CMake CMAKE_OSX_ARCHITECTURES value ("x86_64" or "arm64")
  */
-val buildDirMac = layout.buildDirectory.dir("native/macos")
+fun registerMacosArchBuild(arch: String, osxArch: String): TaskProvider<Copy> {
+    val suffix = arch.capitalize()
+    val buildDirForArch = layout.buildDirectory.dir("native/macos-$arch")
 
-val cmakeConfigureMacos = tasks.register<Exec>("cmakeConfigureMacos") {
-    onlyIf { isMac }
-    doFirst {
-        environment("JAVA_HOME", gradleJavaHome.get())
+    val configure = tasks.register<Exec>("cmakeConfigureMacos$suffix") {
+        onlyIf { isMac }
+        doFirst {
+            environment("JAVA_HOME", gradleJavaHome.get())
+        }
+        commandLine(
+            "cmake",
+            "-S", nativeMacDir.asFile.absolutePath,
+            "-B", buildDirForArch.get().asFile.absolutePath,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_OSX_ARCHITECTURES=$osxArch",
+            "-DWEBP_JNI_SOURCE=${sharedJniSource.absolutePath}"
+        )
     }
-    commandLine(
-        "cmake",
-        "-S", nativeMacDir.asFile.absolutePath,
-        "-B", buildDirMac.get().asFile.absolutePath,
-        "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64",
-        "-DWEBP_JNI_SOURCE=${sharedJniSource.absolutePath}"
-    )
-}
 
-val cmakeBuildMacos = tasks.register<Exec>("cmakeBuildMacos") {
-    onlyIf { isMac }
-    dependsOn(cmakeConfigureMacos)
-    doFirst {
-        environment("JAVA_HOME", gradleJavaHome.get())
+    val build = tasks.register<Exec>("cmakeBuildMacos$suffix") {
+        onlyIf { isMac }
+        dependsOn(configure)
+        doFirst {
+            environment("JAVA_HOME", gradleJavaHome.get())
+        }
+        commandLine(
+            "cmake", "--build", buildDirForArch.get().asFile.absolutePath,
+            "--config", "Release",
+            "--parallel"
+        )
     }
-    commandLine(
-        "cmake", "--build", buildDirMac.get().asFile.absolutePath,
-        "--config", "Release",
-        "--parallel"
-    )
+
+    return tasks.register<Copy>("copyMacosDylib$suffix") {
+        onlyIf { isMac }
+        dependsOn(build)
+        from(buildDirForArch)
+        include("libwebp_natives.dylib")
+        into(layout.buildDirectory.dir("resources/main/native/macos/$arch"))
+    }
 }
 
-/** Copy the universal dylib into both per-arch resource dirs. */
-val copyMacosDylibX64 = tasks.register<Copy>("copyMacosDylibX64") {
-    onlyIf { isMac }
-    dependsOn(cmakeBuildMacos)
-    from(buildDirMac)
-    include("libwebp_natives.dylib")
-    into(layout.buildDirectory.dir("resources/main/native/macos/x64"))
-}
-
-val copyMacosDylibArm64 = tasks.register<Copy>("copyMacosDylibArm64") {
-    onlyIf { isMac }
-    dependsOn(cmakeBuildMacos)
-    from(buildDirMac)
-    include("libwebp_natives.dylib")
-    into(layout.buildDirectory.dir("resources/main/native/macos/arm64"))
-}
+val copyMacosDylibX64   = registerMacosArchBuild("x64",   "x86_64")
+val copyMacosDylibArm64 = registerMacosArchBuild("arm64", "arm64")
 
 tasks.register("copyMacosDylibs") {
     dependsOn(copyMacosDylibX64, copyMacosDylibArm64)
 }
 
 tasks.register<Delete>("cmakeClean") {
-    delete(layout.buildDirectory.dir("native/macos"))
+    delete(
+        layout.buildDirectory.dir("native/macos-x64"),
+        layout.buildDirectory.dir("native/macos-arm64")
+    )
 }
 
 tasks.named("processResources") {
     if (isMac) {
-        dependsOn(copyMacosDylibX64, copyMacosDylibArm64)
+        // Single-arch native: pick the matching dylib for the host.
+        val arch = System.getProperty("os.arch").lowercase()
+        if (arch.contains("aarch64") || arch.contains("arm64")) {
+            dependsOn(copyMacosDylibArm64)
+        } else {
+            dependsOn(copyMacosDylibX64)
+        }
     }
 }

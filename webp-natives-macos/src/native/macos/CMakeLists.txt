@@ -14,17 +14,16 @@ if (NOT DEFINED WEBP_JNI_SOURCE)
     message(FATAL_ERROR "WEBP_JNI_SOURCE must be set via -DWEBP_JNI_SOURCE=<path>")
 endif()
 
-# Universal binary: x86_64 + arm64 in one .dylib. Must be set before any
-# targets are declared so libwebp's own targets inherit the arch list.
-if (NOT CMAKE_OSX_ARCHITECTURES)
-    set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "" FORCE)
-endif()
+# Per-arch build (host's default). Universal builds (x86_64;arm64) break
+# libwebp 1.6.0's per-file SSE2 flags: the gamma.c sharpyuv reference is
+# tagged with -mno-sse2, which clobbers x86_64 ABI requirements during
+# the x86_64 slice. Easier to keep each arch as its own dylib and run two
+# CI jobs (macos-13 = Intel, macos-14 = Apple Silicon) than to lipo.
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Target older macOS so the dylib works on Intel machines back to Catalina.
 if (NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
 endif()
 
 if (NOT CMAKE_BUILD_TYPE)
