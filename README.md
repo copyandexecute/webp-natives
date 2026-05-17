@@ -15,10 +15,35 @@ webp-natives-macos     → TODO (CI matrix, macos runner, universal binary)
 webp-natives-all       → aggregator artifact for consumers
 ```
 
-Coordinates after `publishToMavenLocal`:
+## Consuming
+
+### From the GitHub Pages Maven repo
 
 ```kotlin
-implementation("gg.norisk.webp:all:2.0.0")
+repositories {
+    maven("https://<owner>.github.io/<repo>/")
+}
+dependencies {
+    implementation("gg.norisk.webp:all:<VERSION>")
+}
+```
+
+Versions are auto-bumped on every CI run:
+- branch push → `YY.Q.BUILD-branch` (e.g. `26.2.5-main`)
+- tag push (`v*`) → clean semver (`v1.0.0` → `1.0.0`)
+
+The gh-pages branch is published with `keep_files: true`, so old versions
+accumulate; pin a specific version in your build for reproducibility.
+
+### From mavenLocal (local dev)
+
+```bash
+./gradlew publishToMavenLocal
+```
+
+```kotlin
+repositories { mavenLocal() }
+dependencies { implementation("gg.norisk.webp:all:<gradle.properties version>") }
 ```
 
 ## Usage
