@@ -3,7 +3,6 @@ plugins {
 }
 
 repositories {
-    mavenLocal()
     mavenCentral()
 }
 
@@ -15,7 +14,14 @@ java {
 }
 
 dependencies {
-    implementation("gg.norisk.webp:all:2.0.0")
+    implementation(project(":webp-natives-core"))
+    // Runtime: bundle every platform jar — only the one matching the host
+    // will actually contribute a native, the others contribute empty
+    // resource trees. This lets the smoke-test run on any host without
+    // having to know which platform module to pick.
+    runtimeOnly(project(":webp-natives-windows"))
+    runtimeOnly(project(":webp-natives-linux"))
+    runtimeOnly(project(":webp-natives-macos"))
 }
 
 application {

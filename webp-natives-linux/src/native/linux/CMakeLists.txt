@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(webp_natives LANGUAGES C CXX)
 
-if (NOT WIN32)
-    message(FATAL_ERROR "webp-natives-windows builds only on Windows.")
+if (NOT UNIX OR APPLE)
+    message(FATAL_ERROR "webp-natives-linux builds only on Linux.")
 endif()
 
 if (NOT DEFINED ENV{JAVA_HOME})
-    message(FATAL_ERROR "JAVA_HOME is required to build the JNI DLL.")
+    message(FATAL_ERROR "JAVA_HOME is required to build the JNI shared object.")
 endif()
 set(JAVA_HOME $ENV{JAVA_HOME})
 
@@ -14,17 +14,17 @@ if (NOT DEFINED WEBP_JNI_SOURCE)
     message(FATAL_ERROR "WEBP_JNI_SOURCE must be set via -DWEBP_JNI_SOURCE=<path>")
 endif()
 
-# Statically link the MSVC C++ runtime (/MT) so the DLL doesn't depend on
-# msvcp140 / vcruntime140 being present on the user's machine. (Pattern
-# borrowed from endlesssource/mediainterface — without this the DLL
-# crashed with EXCEPTION_ACCESS_VIOLATION on certain runtime mismatches.)
-cmake_policy(SET CMP0091 NEW)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "" FORCE)
+# Position-Independent Code is mandatory for .so on Linux.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Default to Release if not specified — affects libwebp's own optimizations too.
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
 
 # ─────────────────────────────────────────────────────────────────
 #  libwebp dependency — built from source via FetchContent.
-#  We only need the static encoder/decoder libs; everything else
-#  (cwebp/dwebp CLI tools, gif2webp, examples) is disabled.
+#  Same trimmed config as the Windows module: only encode+decode libs.
 # ─────────────────────────────────────────────────────────────────
 include(FetchContent)
 
@@ -53,21 +53,22 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(libwebp)
 
 # ─────────────────────────────────────────────────────────────────
-#  JNI bridge DLL
+#  JNI bridge .so
 # ─────────────────────────────────────────────────────────────────
 add_library(webp_natives SHARED "${WEBP_JNI_SOURCE}")
 
 target_compile_features(webp_natives PRIVATE c_std_11)
-target_compile_definitions(webp_natives PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(webp_natives PRIVATE -fvisibility=hidden -O3)
 
 target_include_directories(webp_natives PRIVATE
     "${JAVA_HOME}/include"
-    "${JAVA_HOME}/include/win32"
+    "${JAVA_HOME}/include/linux"
 )
 
 target_link_libraries(webp_natives PRIVATE webp)
 
+# Strip unneeded symbols to keep the .so small (saves ~30% on stripped builds).
 set_target_properties(webp_natives PROPERTIES
     OUTPUT_NAME "webp_natives"
-    PREFIX ""
+    LINK_FLAGS_RELEASE "-Wl,--gc-sections -Wl,--strip-all"
 )

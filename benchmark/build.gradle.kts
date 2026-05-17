@@ -3,7 +3,6 @@ plugins {
 }
 
 repositories {
-    mavenLocal()
     mavenCentral()
 }
 
@@ -15,12 +14,14 @@ java {
 }
 
 dependencies {
-    implementation("gg.norisk.webp:all:2.0.0")
+    implementation(project(":webp-natives-core"))
+    runtimeOnly(project(":webp-natives-windows"))
+    runtimeOnly(project(":webp-natives-linux"))
+    runtimeOnly(project(":webp-natives-macos"))
 }
 
 application {
     mainClass.set("Benchmark")
-    // -Xss for deep recursion in image gen, -Xmx for 4K buffers, GC hints for less noise
     applicationDefaultJvmArgs = listOf(
         "-Xmx2g",
         "-XX:+UseG1GC",

@@ -10,6 +10,10 @@ dependencies {
 
 val nativeWindowsDir = layout.projectDirectory.dir("src/native/windows")
 
+/** Shared JNI C source — lives in core so linux/macos can reuse it. */
+val sharedJniSource = rootProject.file("webp-natives-core/src/native/webp_jni.c")
+val jniSrcWin = sharedJniSource.absolutePath.replace("/", "\\")
+
 // JAVA_HOME for CMake — must point at a JDK (not a JRE) so jni.h is reachable.
 // Resolve via JavaToolchainService rather than the running gradle daemon's
 // `java.home`, since the latter often points at a JRE inside the JDK.
@@ -43,7 +47,7 @@ fun registerWindowsArchBuild(arch: String): TaskProvider<Copy> {
         commandLine(
             "cmd", "/c",
             "pushd \"$projectDirPath\" && " +
-                "cmake -S src\\native\\windows -B build\\native\\windows-$arch -A $cmakeArch && " +
+                "cmake -S src\\native\\windows -B build\\native\\windows-$arch -A $cmakeArch -DWEBP_JNI_SOURCE=\"$jniSrcWin\" && " +
                 "popd"
         )
     }

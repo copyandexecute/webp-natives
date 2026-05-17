@@ -1,0 +1,110 @@
+name: build
+
+# Builds the per-platform JNI natives on the matching host OS. Each
+# platform module is gated by an `onlyIf isWindows/isLinux/isMac` check
+# in its own build.gradle.kts, so `./gradlew build` on a given runner
+# only triggers the native build relevant to that host — no manual
+# matrix-task selection needed.
+#
+# Native artifacts are uploaded per job so a publish workflow (or a
+# release release) can pick them all up without re-running.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  #  build-native: one job per (OS, arch) — produces the matching DLL/
+  #  .so/.dylib, runs the smoke-test against it, uploads as an artifact.
+  # ─────────────────────────────────────────────────────────────────
+  build-native:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest,   label: "windows / x64",    module: webp-natives-windows, artifact: native-windows-x64,     resource-glob: "webp-natives-windows/build/resources/main/native/**" }
+          - { runner: windows-11-arm,   label: "windows / arm64",  module: webp-natives-windows, artifact: native-windows-arm64,   resource-glob: "webp-natives-windows/build/resources/main/native/**" }
+          - { runner: ubuntu-latest,    label: "linux / x64",      module: webp-natives-linux,   artifact: native-linux-x64,       resource-glob: "webp-natives-linux/build/resources/main/native/**" }
+          - { runner: ubuntu-24.04-arm, label: "linux / aarch64",  module: webp-natives-linux,   artifact: native-linux-aarch64,   resource-glob: "webp-natives-linux/build/resources/main/native/**" }
+          # macos-latest is currently arm64. The dylib is a universal
+          # binary (x86_64 + arm64 fat file) — Mac x64 hosts also get
+          # the same artifact.
+          - { runner: macos-latest,     label: "macos / universal", module: webp-natives-macos,  artifact: native-macos-universal, resource-glob: "webp-natives-macos/build/resources/main/native/**" }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # `processResources` triggers the platform's CMake task chain via
+      # the `dependsOn(copyXxxDll...)` wiring in each module's
+      # build.gradle.kts. No need to call cmake directly.
+      - name: Build native for ${{ matrix.module }}
+        run: ./gradlew :${{ matrix.module }}:processResources --no-daemon
+        shell: bash
+
+      # Smoke-test loads the freshly-built native via mavenLocal +
+      # NativeLoader — a true end-to-end correctness check on this host.
+      - name: Smoke-test
+        run: ./gradlew :smoke-test:run --no-daemon
+        shell: bash
+
+      - name: Verify native artifact exists
+        run: |
+          ls -la $(find ${{ matrix.module }}/build/resources/main/native -type f) || \
+            (echo "No native artifact produced for ${{ matrix.module }}" && exit 1)
+        shell: bash
+
+      - name: Upload native
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.resource-glob }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  #  collect: pulls every per-platform artifact into one bundle so a
+  #  publish workflow can grab a single download.
+  # ─────────────────────────────────────────────────────────────────
+  collect:
+    name: collect all natives
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: natives
+          merge-multiple: false
+
+      - name: List collected natives
+        run: find natives -type f | sort
+
+      - name: Upload combined bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: natives-all
+          path: natives
+          retention-days: 30
