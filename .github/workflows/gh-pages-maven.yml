@@ -128,7 +128,9 @@ jobs:
   #  Build macOS dylib (universal x86_64 + arm64) via CMake + clang
   # ─────────────────────────────────────────────────────────────────
   natives-macos:
-    runs-on: macos-latest
+    # macos-14 = Apple Silicon + Xcode 15. macos-15/macos-latest ships Xcode
+    # 16 whose SDK math.h trips libwebp's x86_64 universal-binary build.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:

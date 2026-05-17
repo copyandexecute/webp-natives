@@ -102,6 +102,11 @@ tasks.register<Delete>("cmakeClean") {
 
 tasks.named("processResources") {
     if (isWindows) {
-        dependsOn(copyWindowsDllX64)
+        val arch = System.getProperty("os.arch").lowercase()
+        if (arch.contains("aarch64") || arch.contains("arm64")) {
+            dependsOn(copyWindowsDllArm64)
+        } else {
+            dependsOn(copyWindowsDllX64)
+        }
     }
 }
