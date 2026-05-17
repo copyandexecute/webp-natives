@@ -41,10 +41,13 @@ jobs:
           # macos-latest is currently arm64. The dylib is a universal
           # binary (x86_64 + arm64 fat file) — Mac x64 hosts also get
           # the same artifact.
-          # macOS: two single-arch builds (universal binary breaks libwebp's
-          # SSE2 per-file flags). macos-13 = Intel x86_64, macos-14 = Apple
-          # Silicon arm64. Each runner builds its host arch only.
-          - { runner: macos-13,         label: "macos / x64",       module: webp-natives-macos,  artifact: native-macos-x64,       resource-glob: "webp-natives-macos/build/resources/main/native/**" }
+          # macOS: both archs built on macos-14 (Apple Silicon, Xcode 15).
+          # Universal binary breaks libwebp's SSE2 per-file flags, but two
+          # separate single-arch builds work fine — Apple Clang on the arm64
+          # host cross-compiles x86_64 via -DCMAKE_OSX_ARCHITECTURES=x86_64.
+          # Beats the alternative of waiting 30+ min in the rare macos-13
+          # Intel runner queue.
+          - { runner: macos-14,         label: "macos / x64",       module: webp-natives-macos,  artifact: native-macos-x64,       resource-glob: "webp-natives-macos/build/resources/main/native/**" }
           - { runner: macos-14,         label: "macos / arm64",     module: webp-natives-macos,  artifact: native-macos-arm64,     resource-glob: "webp-natives-macos/build/resources/main/native/**" }
 
     steps:
@@ -60,16 +63,28 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # `processResources` triggers the platform's CMake task chain via
-      # the `dependsOn(copyXxxDll...)` wiring in each module's
-      # build.gradle.kts. No need to call cmake directly.
-      - name: Build native for ${{ matrix.module }}
+      # processResources triggers the platform's CMake task chain via the
+      # dependsOn(copyXxx) wiring in each module's build.gradle.kts. On
+      # macOS we have two jobs on the same arm64 runner — one builds the
+      # arm64 dylib via the default processResources host-arch detection,
+      # the other cross-compiles x86_64 by calling the per-arch task
+      # directly.
+      - name: Build native for ${{ matrix.module }} (default host arch)
+        if: ${{ !contains(matrix.label, 'macos / x64') }}
         run: ./gradlew :${{ matrix.module }}:processResources --no-daemon
+        shell: bash
+
+      - name: Build native for macos / x64 (cross-compile from arm64 host)
+        if: ${{ contains(matrix.label, 'macos / x64') }}
+        run: ./gradlew :webp-natives-macos:copyMacosDylibX64 --no-daemon
         shell: bash
 
       # Smoke-test loads the freshly-built native via mavenLocal +
       # NativeLoader — a true end-to-end correctness check on this host.
+      # Skipped for the macos/x64 cross-compile job: the binary was built
+      # for x86_64 but the runner is arm64, so System.load would fail.
       - name: Smoke-test
+        if: ${{ !contains(matrix.label, 'macos / x64') }}
         run: ./gradlew :smoke-test:run --no-daemon
         shell: bash
 

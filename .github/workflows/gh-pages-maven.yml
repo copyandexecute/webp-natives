@@ -128,10 +128,12 @@ jobs:
   #  Build macOS dylib (universal x86_64 + arm64) via CMake + clang
   # ─────────────────────────────────────────────────────────────────
   natives-macos-x64:
-    # Intel runner: builds x86_64 dylib only. Universal builds break
-    # libwebp 1.6.0's SSE2 per-file flags, so we build each arch on its
-    # native host instead.
-    runs-on: macos-13
+    # Apple Silicon runner cross-compiling x86_64 via
+    # -DCMAKE_OSX_ARCHITECTURES=x86_64. Universal builds break libwebp's
+    # SSE2 per-file flags, but two separate single-arch builds work
+    # fine — and using macos-14 for both avoids the painfully long
+    # macos-13 (Intel) runner queue.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
