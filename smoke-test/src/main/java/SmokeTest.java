@@ -74,6 +74,50 @@ public class SmokeTest {
             System.exit(1);
         }
 
+        // Verify the preset API: built-in + custom from constants + custom from raw ints
+        byte[] viaFast       = gg.norisk.webp.WebP.encodeLossless(img, gg.norisk.webp.EncodePreset.FAST);
+        byte[] viaNamed      = gg.norisk.webp.WebP.encodeLossless(img,
+            gg.norisk.webp.EncodePreset.of(
+                gg.norisk.webp.EncodePreset.METHOD_BALANCED,
+                gg.norisk.webp.EncodePreset.LOSSLESS_DEFAULT));
+        byte[] viaCustom     = gg.norisk.webp.WebP.encodeLossless(img, gg.norisk.webp.EncodePreset.of(3, 50f));
+        BufferedImage rtFast   = gg.norisk.webp.WebP.decode(viaFast);
+        BufferedImage rtNamed  = gg.norisk.webp.WebP.decode(viaNamed);
+        BufferedImage rtCustom = gg.norisk.webp.WebP.decode(viaCustom);
+        int fastMm   = 0;
+        int namedMm  = 0;
+        int customMm = 0;
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (img.getRGB(x, y) != rtFast.getRGB(x, y))   fastMm++;
+                if (img.getRGB(x, y) != rtNamed.getRGB(x, y))  namedMm++;
+                if (img.getRGB(x, y) != rtCustom.getRGB(x, y)) customMm++;
+            }
+        }
+        System.out.println("[7] FAST preset lossless roundtrip mismatches:                      " + fastMm   + " / 4096");
+        System.out.println("[7] of(METHOD_BALANCED, LOSSLESS_DEFAULT) roundtrip mismatches:    " + namedMm  + " / 4096");
+        System.out.println("[7] custom(3, 50f) lossless roundtrip mismatches:                  " + customMm + " / 4096");
+        if (fastMm != 0 || namedMm != 0 || customMm != 0) {
+            System.err.println("FAIL — preset roundtrip mismatched");
+            System.exit(1);
+        }
+
+        // Verify validation: out-of-range preset values must throw
+        try {
+            new gg.norisk.webp.EncodePreset(7, 50f);
+            System.err.println("FAIL — EncodePreset(method=7) should have thrown");
+            System.exit(1);
+        } catch (IllegalArgumentException ok) {
+            System.out.println("[8] validation: rejected method=7 as expected");
+        }
+        try {
+            new gg.norisk.webp.EncodePreset(3, 101f);
+            System.err.println("FAIL — EncodePreset(losslessQuality=101) should have thrown");
+            System.exit(1);
+        } catch (IllegalArgumentException ok) {
+            System.out.println("[8] validation: rejected losslessQuality=101 as expected");
+        }
+
         System.out.println("\nALL CHECKS PASSED.");
     }
 }

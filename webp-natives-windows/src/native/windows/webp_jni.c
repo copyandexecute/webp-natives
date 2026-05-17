@@ -3,6 +3,20 @@
  *
  * Java side:  gg.norisk.webp.internal.WebPNative
  * Symbols:    Java_gg_norisk_webp_internal_WebPNative_<method>
+ *
+ * Performance notes
+ * -----------------
+ * The "fast path" routines (decodeARGBInto / encodeARGB) skip the byte[]
+ * intermediate: libwebp is configured for MODE_BGRA and writes directly
+ * into / reads directly from a Java int[] that is also the BufferedImage's
+ * DataBufferInt backing store. On little-endian systems (all targets we
+ * care about: x86, x86_64, ARM64) the byte order BGRA in memory is
+ * bit-identical to a Java int with format 0xAARRGGBB — i.e. exactly what
+ * BufferedImage.TYPE_INT_ARGB stores.
+ *
+ * That gives us zero pixel-format conversion on top of zero allocation
+ * inside the decoder. The old RGBA byte[] paths are kept around as
+ * fallback for callers that supply images in unusual pixel formats.
  */
 
 #include <jni.h>
@@ -13,6 +27,18 @@
 
 #include "webp/decode.h"
 #include "webp/encode.h"
+
+/* Compile-time assertion that we're on a little-endian target. libwebp's
+ * MODE_BGRA writes bytes in memory as [B][G][R][A]; a Java int read out of
+ * that memory on LE gives 0xAARRGGBB which is exactly BufferedImage.TYPE_INT_ARGB.
+ * On a hypothetical big-endian JVM the fast path is unsafe; refuse to build. */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
+#  error "webp-natives fast path requires a little-endian target"
+#endif
+
+/* ──────────────────────────────────────────────────────────────────
+ *  Header parse
+ * ────────────────────────────────────────────────────────────────── */
 
 JNIEXPORT jboolean JNICALL
 Java_gg_norisk_webp_internal_WebPNative_isWebP(JNIEnv* env, jclass cls, jbyteArray data) {
@@ -56,8 +82,183 @@ Java_gg_norisk_webp_internal_WebPNative_getInfo(JNIEnv* env, jclass cls, jbyteAr
     return result;
 }
 
+/* ──────────────────────────────────────────────────────────────────
+ *  Fast path: decode/encode directly to/from int[] (== BufferedImage
+ *  TYPE_INT_ARGB backing buffer on little-endian).
+ * ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Decode a WEBP into a pre-allocated int[] buffer. Caller must size the
+ * buffer to at least width*height ints (== width*height*4 bytes).
+ *
+ * Returns 0 on success, negative on error. On success, outDims is set to
+ * {width, height}.
+ */
+JNIEXPORT jint JNICALL
+Java_gg_norisk_webp_internal_WebPNative_decodeARGBInto(JNIEnv* env, jclass cls,
+                                                        jbyteArray data,
+                                                        jintArray outPixels,
+                                                        jintArray outDims) {
+    (void) cls;
+    if (data == NULL || outPixels == NULL || outDims == NULL) return -1;
+    jsize dataLen = (*env)->GetArrayLength(env, data);
+    jsize pixelsLen = (*env)->GetArrayLength(env, outPixels);
+    if (dataLen <= 0 || pixelsLen <= 0) return -1;
+    if ((*env)->GetArrayLength(env, outDims) < 2) return -1;
+
+    jbyte* dataBytes = (*env)->GetByteArrayElements(env, data, NULL);
+    if (dataBytes == NULL) return -1;
+
+    /* Sniff dimensions to validate output buffer capacity before we touch it. */
+    int width = 0, height = 0;
+    if (!WebPGetInfo((const uint8_t*) dataBytes, (size_t) dataLen, &width, &height)) {
+        (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+        return -2;
+    }
+    if (width <= 0 || height <= 0 || (jsize) width * (jsize) height > pixelsLen) {
+        (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+        return -3;
+    }
+
+    /* GetPrimitiveArrayCritical pins the array's backing storage on HotSpot
+     * (no copy). The critical region must not call back into the JVM —
+     * libwebp's decode is pure C, so this is safe. The cost is that GC is
+     * blocked during the call; for our largest workload (4K decode ~150ms)
+     * this is a known tradeoff for the zero-copy gain. */
+    jint* pixels = (jint*) (*env)->GetPrimitiveArrayCritical(env, outPixels, NULL);
+    if (pixels == NULL) {
+        (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+        return -1;
+    }
+
+    WebPDecoderConfig config;
+    WebPInitDecoderConfig(&config);
+    config.options.use_threads     = 1;
+    config.output.colorspace       = MODE_BGRA;
+    config.output.u.RGBA.rgba      = (uint8_t*) pixels;
+    config.output.u.RGBA.size      = (size_t) width * height * 4;
+    config.output.u.RGBA.stride    = width * 4;
+    config.output.is_external_memory = 1;
+
+    VP8StatusCode status = WebPDecode((const uint8_t*) dataBytes, (size_t) dataLen, &config);
+
+    /* Release the critical pin in both success and failure branches before
+     * we touch any other JNI call (in particular SetIntArrayRegion below). */
+    (*env)->ReleasePrimitiveArrayCritical(env, outPixels, pixels, status == VP8_STATUS_OK ? 0 : JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+
+    if (status != VP8_STATUS_OK) {
+        return -10 - (jint) status;
+    }
+
+    jint dims[2] = { width, height };
+    (*env)->SetIntArrayRegion(env, outDims, 0, 2, dims);
+    return 0;
+}
+
+/**
+ * Apply an {@code EncodePreset}'s knobs (method + losslessQuality) to a
+ * libwebp config. method clamped to [0,6], losslessQuality to [0,100] —
+ * matches the Java-side validation but defends in depth.
+ */
+static void applyPreset(WebPConfig* config, jboolean lossless, jfloat lossyQuality, jint method, jfloat losslessQuality) {
+    if (method < 0) method = 0;
+    if (method > 6) method = 6;
+    if (losslessQuality < 0.0f) losslessQuality = 0.0f;
+    if (losslessQuality > 100.0f) losslessQuality = 100.0f;
+
+    if (lossless == JNI_TRUE) {
+        config->lossless = 1;
+        config->quality  = losslessQuality;
+        config->method   = method;
+    } else {
+        /* WebPConfigPreset overwrites quality and method to its preset
+         * defaults — call it first, then override method. */
+        WebPConfigPreset(config, WEBP_PRESET_DEFAULT, lossyQuality);
+        config->method   = method;
+    }
+}
+
+/**
+ * Encode an int[] holding ARGB pixels (BGRA bytes in memory on LE) into
+ * a WEBP byte stream.
+ *
+ * Uses libwebp's low-level WebPEncode API instead of the convenience
+ * WebPEncode{Lossless}BGRA wrappers so we can:
+ *   - enable multi-threading (config.thread_level = 1)  → 2-3× on lossy
+ *   - apply a caller-supplied tuning preset (method + losslessQuality)
+ *   - feed the encoder ARGB data zero-copy via picture.argb = pinned int[]
+ */
 JNIEXPORT jbyteArray JNICALL
-Java_gg_norisk_webp_internal_WebPNative_decodeRGBA(JNIEnv* env, jclass cls, jbyteArray data, jintArray outDims) {
+Java_gg_norisk_webp_internal_WebPNative_encodeARGB(JNIEnv* env, jclass cls,
+                                                    jintArray argb,
+                                                    jint width, jint height,
+                                                    jfloat quality, jboolean lossless,
+                                                    jint method, jfloat losslessQuality) {
+    (void) cls;
+    if (argb == NULL || width <= 0 || height <= 0) return NULL;
+    jsize len = (*env)->GetArrayLength(env, argb);
+    if (len < (jsize) width * (jsize) height) return NULL;
+
+    WebPConfig config;
+    if (!WebPConfigInit(&config)) return NULL;
+    applyPreset(&config, lossless, quality, method, losslessQuality);
+    config.thread_level = 1;
+
+    WebPPicture picture;
+    if (!WebPPictureInit(&picture)) return NULL;
+    picture.use_argb     = 1;
+    picture.width        = width;
+    picture.height       = height;
+    picture.argb_stride  = width;
+
+    WebPMemoryWriter writer;
+    WebPMemoryWriterInit(&writer);
+    picture.writer       = WebPMemoryWrite;
+    picture.custom_ptr   = &writer;
+
+    /* Pin only for the duration of WebPEncode. Outside the critical region
+     * we may safely allocate/grow the output writer (which calls malloc). */
+    jint* pixels = (jint*) (*env)->GetPrimitiveArrayCritical(env, argb, NULL);
+    if (pixels == NULL) {
+        WebPMemoryWriterClear(&writer);
+        return NULL;
+    }
+    picture.argb = (uint32_t*) pixels;
+
+    int ok = WebPEncode(&config, &picture);
+
+    /* Picture's argb pointer was externally owned; WebPPictureFree won't
+     * touch it. Release the pin first so any post-encode malloc inside
+     * picture cleanup doesn't run under critical-section restrictions. */
+    (*env)->ReleasePrimitiveArrayCritical(env, argb, pixels, JNI_ABORT);
+    picture.argb = NULL;
+    WebPPictureFree(&picture);
+
+    if (!ok || writer.size == 0) {
+        WebPMemoryWriterClear(&writer);
+        return NULL;
+    }
+
+    jbyteArray result = (*env)->NewByteArray(env, (jsize) writer.size);
+    if (result == NULL) {
+        WebPMemoryWriterClear(&writer);
+        return NULL;
+    }
+    (*env)->SetByteArrayRegion(env, result, 0, (jsize) writer.size, (const jbyte*) writer.mem);
+    WebPMemoryWriterClear(&writer);
+    return result;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ *  Fallback path: byte[] RGBA. Used when the caller can't or won't
+ *  supply a TYPE_INT_ARGB int[] (e.g. legacy unit tests, exotic
+ *  BufferedImage subtypes). Same threading flag, just one more copy.
+ * ────────────────────────────────────────────────────────────────── */
+
+JNIEXPORT jbyteArray JNICALL
+Java_gg_norisk_webp_internal_WebPNative_decodeRGBA(JNIEnv* env, jclass cls,
+                                                    jbyteArray data, jintArray outDims) {
     (void) cls;
     if (data == NULL || outDims == NULL) return NULL;
     jsize len = (*env)->GetArrayLength(env, data);
@@ -68,20 +269,42 @@ Java_gg_norisk_webp_internal_WebPNative_decodeRGBA(JNIEnv* env, jclass cls, jbyt
     if (bytes == NULL) return NULL;
 
     int width = 0, height = 0;
-    uint8_t* rgba = WebPDecodeRGBA((const uint8_t*) bytes, (size_t) len, &width, &height);
-
-    (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
-
-    if (rgba == NULL) return NULL;
+    if (!WebPGetInfo((const uint8_t*) bytes, (size_t) len, &width, &height)) {
+        (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
+        return NULL;
+    }
 
     const jsize rgbaLen = (jsize) width * (jsize) height * 4;
     jbyteArray result = (*env)->NewByteArray(env, rgbaLen);
     if (result == NULL) {
-        WebPFree(rgba);
+        (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
         return NULL;
     }
-    (*env)->SetByteArrayRegion(env, result, 0, rgbaLen, (const jbyte*) rgba);
-    WebPFree(rgba);
+
+    jbyte* outBytes = (*env)->GetByteArrayElements(env, result, NULL);
+    if (outBytes == NULL) {
+        (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
+        return NULL;
+    }
+
+    WebPDecoderConfig config;
+    WebPInitDecoderConfig(&config);
+    config.options.use_threads     = 1;
+    config.output.colorspace       = MODE_RGBA;
+    config.output.u.RGBA.rgba      = (uint8_t*) outBytes;
+    config.output.u.RGBA.size      = (size_t) rgbaLen;
+    config.output.u.RGBA.stride    = width * 4;
+    config.output.is_external_memory = 1;
+
+    VP8StatusCode status = WebPDecode((const uint8_t*) bytes, (size_t) len, &config);
+
+    (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
+
+    if (status != VP8_STATUS_OK) {
+        (*env)->ReleaseByteArrayElements(env, result, outBytes, JNI_ABORT);
+        return NULL;
+    }
+    (*env)->ReleaseByteArrayElements(env, result, outBytes, 0);
 
     jint dims[2] = { width, height };
     (*env)->SetIntArrayRegion(env, outDims, 0, 2, dims);
@@ -90,39 +313,61 @@ Java_gg_norisk_webp_internal_WebPNative_decodeRGBA(JNIEnv* env, jclass cls, jbyt
 
 JNIEXPORT jbyteArray JNICALL
 Java_gg_norisk_webp_internal_WebPNative_encodeRGBA(JNIEnv* env, jclass cls,
-                                                   jbyteArray rgba,
-                                                   jint width, jint height,
-                                                   jfloat quality, jboolean lossless) {
+                                                    jbyteArray rgba,
+                                                    jint width, jint height,
+                                                    jfloat quality, jboolean lossless,
+                                                    jint method, jfloat losslessQuality) {
     (void) cls;
     if (rgba == NULL || width <= 0 || height <= 0) return NULL;
     jsize len = (*env)->GetArrayLength(env, rgba);
     if (len < (jsize) width * (jsize) height * 4) return NULL;
 
+    WebPConfig config;
+    if (!WebPConfigInit(&config)) return NULL;
+    applyPreset(&config, lossless, quality, method, losslessQuality);
+    config.thread_level = 1;
+
+    WebPPicture picture;
+    if (!WebPPictureInit(&picture)) return NULL;
+    picture.use_argb = 1;
+    picture.width    = width;
+    picture.height   = height;
+
+    WebPMemoryWriter writer;
+    WebPMemoryWriterInit(&writer);
+    picture.writer     = WebPMemoryWrite;
+    picture.custom_ptr = &writer;
+
     jbyte* pixels = (*env)->GetByteArrayElements(env, rgba, NULL);
-    if (pixels == NULL) return NULL;
-
-    uint8_t* output = NULL;
-    size_t outLen;
-    const int stride = width * 4;
-    if (lossless == JNI_TRUE) {
-        outLen = WebPEncodeLosslessRGBA((const uint8_t*) pixels, width, height, stride, &output);
-    } else {
-        outLen = WebPEncodeRGBA((const uint8_t*) pixels, width, height, stride, quality, &output);
+    if (pixels == NULL) {
+        WebPMemoryWriterClear(&writer);
+        return NULL;
     }
 
+    /* Import RGBA into the picture (libwebp allocates internal ARGB plane,
+     * converts byte order). Fallback path so a tiny extra copy is acceptable. */
+    int imported = WebPPictureImportRGBA(&picture, (const uint8_t*) pixels, width * 4);
     (*env)->ReleaseByteArrayElements(env, rgba, pixels, JNI_ABORT);
-
-    if (outLen == 0 || output == NULL) {
-        if (output != NULL) WebPFree(output);
+    if (!imported) {
+        WebPPictureFree(&picture);
+        WebPMemoryWriterClear(&writer);
         return NULL;
     }
 
-    jbyteArray result = (*env)->NewByteArray(env, (jsize) outLen);
+    int ok = WebPEncode(&config, &picture);
+    WebPPictureFree(&picture);
+
+    if (!ok || writer.size == 0) {
+        WebPMemoryWriterClear(&writer);
+        return NULL;
+    }
+
+    jbyteArray result = (*env)->NewByteArray(env, (jsize) writer.size);
     if (result == NULL) {
-        WebPFree(output);
+        WebPMemoryWriterClear(&writer);
         return NULL;
     }
-    (*env)->SetByteArrayRegion(env, result, 0, (jsize) outLen, (const jbyte*) output);
-    WebPFree(output);
+    (*env)->SetByteArrayRegion(env, result, 0, (jsize) writer.size, (const jbyte*) writer.mem);
+    WebPMemoryWriterClear(&writer);
     return result;
 }

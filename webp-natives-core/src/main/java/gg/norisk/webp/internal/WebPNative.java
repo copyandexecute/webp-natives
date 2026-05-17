@@ -5,10 +5,17 @@ import gg.norisk.webp.WebPException;
 /**
  * Raw JNI surface — package-internal. Consumers should use {@link gg.norisk.webp.WebP} instead.
  *
- * <p>Loading the native library is deferred: the static initializer triggers
- * {@link NativeLoader#load()} the first time this class is touched. If the
- * load fails, the {@code ExceptionInInitializerError} is wrapped on every
- * subsequent native-method dispatch so callers see a {@link WebPException}.
+ * <p>Two parallel encode/decode entry points are exposed:
+ *
+ * <ul>
+ *   <li>{@link #decodeARGBInto(byte[], int[], int[])} / {@link #encodeARGB(int[], int, int, float, boolean)}
+ *       — fast path. Caller supplies an {@code int[]} that is read/written as
+ *       BGRA bytes in memory (on little-endian, equivalent to {@code TYPE_INT_ARGB}
+ *       packed integers). Zero pixel-format conversion on the Java side.</li>
+ *   <li>{@link #decodeRGBA(byte[], int[])} / {@link #encodeRGBA(byte[], int, int, float, boolean)}
+ *       — fallback. Plain RGBA byte arrays for callers that can't use the
+ *       fast path (unusual {@code BufferedImage} types, byte-oriented I/O).</li>
+ * </ul>
  */
 public final class WebPNative {
 
@@ -22,34 +29,31 @@ public final class WebPNative {
 
     private WebPNative() {}
 
-    /** Magic-bytes check; returns {@code true} if {@code data} starts with a valid WEBP RIFF header. */
     public static native boolean isWebP(byte[] data);
-
-    /**
-     * Read WEBP width/height without decoding pixels.
-     *
-     * @return {@code int[]{width, height}} or {@code null} if {@code data} is not a parseable WEBP
-     */
     public static native int[] getInfo(byte[] data);
 
     /**
-     * Decode a WEBP byte stream to a row-major RGBA8 buffer.
+     * Fast-path decode: write decoded BGRA bytes directly into {@code outPixels}.
+     * {@code outPixels.length} must be at least {@code width*height} (sniffed
+     * from the WEBP header before any output is touched).
      *
-     * <p>On success, {@code outDims} is set to {@code {width, height}} and the
-     * returned array has length {@code width * height * 4}. Returns {@code null}
-     * on failure.
+     * @return 0 on success; negative on error (see source for codes)
      */
-    public static native byte[] decodeRGBA(byte[] data, int[] outDims);
+    public static native int decodeARGBInto(byte[] data, int[] outPixels, int[] outDims);
 
     /**
-     * Encode row-major RGBA8 pixels to a WEBP byte stream.
+     * Fast-path encode: read source pixels directly from {@code argb} as
+     * BGRA-in-memory ints.
      *
-     * @param rgba   row-major RGBA8, length must be {@code width * height * 4}
-     * @param width  positive image width
-     * @param height positive image height
-     * @param quality 0.0 .. 100.0 (ignored if {@code lossless})
-     * @param lossless if {@code true}, emit a lossless WEBP
+     * @param method libwebp encoder method, 0..6
+     * @param losslessQuality libwebp lossless compression effort 0..100 (ignored in lossy mode)
      * @return encoded WEBP bytes, or {@code null} on failure
      */
-    public static native byte[] encodeRGBA(byte[] rgba, int width, int height, float quality, boolean lossless);
+    public static native byte[] encodeARGB(int[] argb, int width, int height, float quality, boolean lossless, int method, float losslessQuality);
+
+    /** Fallback decode to a freshly-allocated row-major RGBA byte buffer. */
+    public static native byte[] decodeRGBA(byte[] data, int[] outDims);
+
+    /** Fallback encode from a row-major RGBA byte buffer. */
+    public static native byte[] encodeRGBA(byte[] rgba, int width, int height, float quality, boolean lossless, int method, float losslessQuality);
 }

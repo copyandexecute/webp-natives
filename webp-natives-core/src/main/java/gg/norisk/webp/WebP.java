@@ -11,8 +11,13 @@ import java.awt.image.DataBufferInt;
  * Public WEBP encode/decode facade. Backed by libwebp via JNI.
  *
  * <p>The native library is loaded lazily on first call. Use
- * {@link #loadNativeLibrary()} to force-load eagerly (returns
- * {@code true}/{@code false} instead of throwing).
+ * {@link #loadNativeLibrary()} to force-load eagerly.
+ *
+ * <p>Fast path: when the source / destination is a {@link BufferedImage} of
+ * {@link BufferedImage#TYPE_INT_ARGB}, the JNI bridge reads from / writes to
+ * the int[] backing buffer directly — no per-pixel format conversion on the
+ * Java side. Other {@code BufferedImage} types fall back to a byte[] RGBA
+ * round-trip via {@link #imageToRgba(BufferedImage)}.
  *
  * <p>All methods are thread-safe.
  */
@@ -42,84 +47,98 @@ public final class WebP {
         return WebPNative.getInfo(data);
     }
 
-    /** Decode WEBP bytes to a {@link BufferedImage} (TYPE_INT_ARGB). */
+    // ─────────────────────────────────────────────────────────────────
+    //  Decode
+    // ─────────────────────────────────────────────────────────────────
+
+    /** Decode WEBP bytes to a {@link BufferedImage} ({@link BufferedImage#TYPE_INT_ARGB}). */
     public static BufferedImage decode(byte[] data) throws WebPException {
         requireBytes(data);
-        int[] dims = new int[2];
-        byte[] rgba = WebPNative.decodeRGBA(data, dims);
-        if (rgba == null) {
+        int[] info = WebPNative.getInfo(data);
+        if (info == null) {
             throw new WebPException("Failed to decode WEBP (invalid stream or unsupported features)");
         }
-        return rgbaToImage(rgba, dims[0], dims[1]);
+        int w = info[0];
+        int h = info[1];
+
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        int[] pixels = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
+        int[] outDims = new int[2];
+        int rc = WebPNative.decodeARGBInto(data, pixels, outDims);
+        if (rc != 0 || outDims[0] != w || outDims[1] != h) {
+            throw new WebPException("WEBP decode failed (code " + rc + ")");
+        }
+        return img;
     }
 
-    /** Encode {@code image} as lossy WEBP. Quality is in {@code [0..1]}. */
+    // ─────────────────────────────────────────────────────────────────
+    //  Encode
+    // ─────────────────────────────────────────────────────────────────
+
+    /** Encode {@code image} as lossy WEBP with {@link EncodePreset#BALANCED}. Quality in {@code [0..1]}. */
     public static byte[] encode(BufferedImage image, float quality) throws WebPException {
-        return encode(image, quality, /* lossless = */ false);
+        return encode(image, quality, /* lossless = */ false, EncodePreset.BALANCED);
     }
 
-    /** Encode {@code image} as WEBP. Quality in {@code [0..1]}; if {@code lossless}, quality is ignored. */
+    /** Encode with a custom preset. Quality in {@code [0..1]}; if {@code lossless}, quality is ignored. */
     public static byte[] encode(BufferedImage image, float quality, boolean lossless) throws WebPException {
+        return encode(image, quality, lossless, EncodePreset.BALANCED);
+    }
+
+    /** Encode with a custom or built-in {@link EncodePreset}. */
+    public static byte[] encode(BufferedImage image, float quality, boolean lossless, EncodePreset preset) throws WebPException {
         requireImage(image);
+        if (preset == null) preset = EncodePreset.BALANCED;
         int w = image.getWidth();
         int h = image.getHeight();
+        float q  = clamp(quality, 0f, 1f) * 100f;
+        int   m  = preset.method();
+        float lq = preset.losslessQuality();
+
+        // Fast path: TYPE_INT_ARGB → libwebp can read the int[] directly as BGRA.
+        if (image.getType() == BufferedImage.TYPE_INT_ARGB) {
+            int[] argb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
+            byte[] out = WebPNative.encodeARGB(argb, w, h, q, lossless, m, lq);
+            if (out == null) throw new WebPException("Failed to encode WEBP (fast path returned null)");
+            return out;
+        }
+
+        // Fallback: copy into a row-major RGBA byte buffer.
         byte[] rgba = imageToRgba(image);
-        float q = clamp(quality, 0f, 1f) * 100f;
-        byte[] out = WebPNative.encodeRGBA(rgba, w, h, q, lossless);
+        byte[] out = WebPNative.encodeRGBA(rgba, w, h, q, lossless, m, lq);
         if (out == null) {
-            throw new WebPException("Failed to encode WEBP (libwebp returned zero bytes)");
+            throw new WebPException("Failed to encode WEBP (fallback path returned null)");
         }
         return out;
     }
 
-    /** Encode {@code image} as lossless WEBP. */
+    /** Encode {@code image} as lossless WEBP with {@link EncodePreset#BALANCED}. */
     public static byte[] encodeLossless(BufferedImage image) throws WebPException {
-        return encode(image, 1f, /* lossless = */ true);
+        return encode(image, 1f, /* lossless = */ true, EncodePreset.BALANCED);
+    }
+
+    /** Encode {@code image} as lossless WEBP with the given preset. */
+    public static byte[] encodeLossless(BufferedImage image, EncodePreset preset) throws WebPException {
+        return encode(image, 1f, /* lossless = */ true, preset);
     }
 
     // ─────────────────────────────────────────────────────────────────
-    //  Pixel format conversion
+    //  Pixel format conversion — fallback path only
     // ─────────────────────────────────────────────────────────────────
 
-    /** RGBA8 row-major buffer → ARGB BufferedImage. */
-    private static BufferedImage rgbaToImage(byte[] rgba, int w, int h) {
-        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-        int[] argb = new int[w * h];
-        for (int i = 0; i < argb.length; i++) {
-            int r = rgba[i * 4]     & 0xFF;
-            int g = rgba[i * 4 + 1] & 0xFF;
-            int b = rgba[i * 4 + 2] & 0xFF;
-            int a = rgba[i * 4 + 3] & 0xFF;
-            argb[i] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-        img.setRGB(0, 0, w, h, argb, 0, w);
-        return img;
-    }
-
-    /** Any BufferedImage → RGBA8 row-major buffer. */
+    /** Any BufferedImage → RGBA8 row-major buffer. Used only for non-INT_ARGB inputs. */
     private static byte[] imageToRgba(BufferedImage image) {
         int w = image.getWidth();
         int h = image.getHeight();
         byte[] out = new byte[w * h * 4];
 
         int type = image.getType();
-        if (type == BufferedImage.TYPE_INT_ARGB || type == BufferedImage.TYPE_INT_ARGB_PRE) {
-            int[] argb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-            for (int i = 0; i < argb.length; i++) {
-                int p = argb[i];
-                out[i * 4]     = (byte) ((p >> 16) & 0xFF);
-                out[i * 4 + 1] = (byte) ((p >> 8)  & 0xFF);
-                out[i * 4 + 2] = (byte) ( p        & 0xFF);
-                out[i * 4 + 3] = (byte) ((p >> 24) & 0xFF);
-            }
-            return out;
-        }
         if (type == BufferedImage.TYPE_INT_RGB || type == BufferedImage.TYPE_INT_BGR) {
             int[] argb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
             boolean bgr = (type == BufferedImage.TYPE_INT_BGR);
             for (int i = 0; i < argb.length; i++) {
                 int p = argb[i];
-                int r = bgr ? (p & 0xFF)        : ((p >> 16) & 0xFF);
+                int r = bgr ? (p & 0xFF)         : ((p >> 16) & 0xFF);
                 int g =        (p >> 8) & 0xFF;
                 int b = bgr ? ((p >> 16) & 0xFF) : ( p        & 0xFF);
                 out[i * 4]     = (byte) r;

@@ -1,38 +1,124 @@
 # webp-natives
 
-WEBP encode/decode for NoRisk modules. Java 8-compatible facade backed by
-libwebp JNI natives for **win/linux/mac × x64 + aarch64**.
+WEBP encode/decode for the JVM. JNI wrapper around Google's
+[libwebp](https://chromium.googlesource.com/webm/libwebp) with a small,
+opinionated Java API. Bundles native binaries for win/linux/mac × x64+aarch64
+(work-in-progress: Linux and macOS modules need CI matrix builds).
 
-Internally delegates to [`dev.matrixlab.webp4j:webp4j-core`](https://github.com/MrNanko/webp4j) —
-the facade exists so consumers (e.g. `mcreal`) depend on a stable NoRisk-owned
-artifact and we can swap the implementation later without touching call sites.
+## Modules
 
-## Coordinate
+```
+webp-natives-core      → public API + classpath native loader      (Java 8)
+webp-natives-windows   → JNI + win-x64 (+arm64) DLL, built via CMake
+webp-natives-linux     → TODO (CI matrix, ubuntu runner)
+webp-natives-macos     → TODO (CI matrix, macos runner, universal binary)
+webp-natives-all       → aggregator artifact for consumers
+```
+
+Coordinates after `publishToMavenLocal`:
 
 ```kotlin
-gg.norisk.webp:webp-natives:1.0.0
+implementation("gg.norisk.webp:all:2.0.0")
 ```
 
 ## Usage
 
 ```java
 import gg.norisk.webp.WebP;
-import java.awt.image.BufferedImage;
+import gg.norisk.webp.EncodePreset;
 
-// optional eager native load (e.g. at mod init)
+// One-time eager load (optional — lazy on first call anyway)
 WebP.loadNativeLibrary();
 
-BufferedImage img = WebP.decode(bytes);
-byte[] lossy    = WebP.encode(img, 0.9f);
+// Decode
+BufferedImage img = WebP.decode(webpBytes);
+
+// Encode — defaults (BALANCED, lossy, q=0.85 typical)
+byte[] lossy    = WebP.encode(img, 0.85f);
 byte[] lossless = WebP.encodeLossless(img);
+
+// Tune speed vs. size: built-in presets
+byte[] fast     = WebP.encodeLossless(img, EncodePreset.FAST);
+byte[] best     = WebP.encodeLossless(img, EncodePreset.BEST);
+
+// Or custom — from named constants:
+EncodePreset custom = EncodePreset.of(
+    EncodePreset.METHOD_BALANCED,
+    EncodePreset.LOSSLESS_DEFAULT);
+byte[] custom1 = WebP.encodeLossless(img, custom);
+
+// Or custom — raw libwebp numbers:
+byte[] custom2 = WebP.encodeLossless(img, new EncodePreset(3, 50f));
 ```
 
-## Building
+## Performance
 
-```bash
+Measured on Win10 amd64, JDK 21, photo-like 3840×2160 test image,
+vs. Java ImageIO PNG/JPG:
+
+| Op                            | webp-natives | ImageIO    | Δ                    |
+|-------------------------------|--------------|------------|----------------------|
+| Decode lossless               | 98 ms        | 363 ms (PNG)| **3.7× faster**     |
+| Decode lossy                  | 160 ms       | 92 ms (JPG) | JPG 1.7× faster     |
+| Encode lossy q=0.85           | 459 ms       | 237 ms (JPG)| JPG 1.9× faster     |
+| Encode lossless (BALANCED)    | 6 675 ms     | 1 167 ms (PNG)| PNG 5.7× faster   |
+| **Output size lossless**      | **7.6 MB**   | **20.3 MB (PNG)** | **62% smaller** |
+| Output size lossy q=0.85      | 2.9 MB       | 2.4 MB (JPG)| JPG 17% smaller     |
+
+**Tradeoff TL;DR**:
+- WEBP decode is significantly faster than PNG decode at any size
+- WEBP lossless saves ~60% disk vs PNG but `BALANCED` encode is ~5× slower
+- `EncodePreset.FAST` is **12× faster than BALANCED** and still produces output
+  56% smaller than PNG — for typical screenshot saving this is the right preset
+- JPG remains faster for lossy, but doesn't carry alpha — WEBP wins for cosmetics / UI sprites
+
+### Lossless preset comparison (HD 1280×720, photo-like)
+
+| Preset    | Time      | vs BALANCED | Output  | vs PNG output |
+|-----------|-----------|-------------|---------|---------------|
+| FAST      | **42 ms** | **12× faster** | 1108 KB | **56% smaller** |
+| BALANCED  | 512 ms    | baseline    | 947 KB  | 63% smaller   |
+| BEST      | 6976 ms   | 14× slower  | 940 KB  | 63% smaller   |
+| PNG (ref) | 158 ms    |             | 2540 KB |               |
+
+Key takeaway: **BEST is almost never worth it** — 14× the runtime for a 1% size
+improvement over BALANCED. Reach for FAST when latency matters; BALANCED is
+the default for general use; pick BEST only when you're encoding once and the
+file will be hit many times (CDN, cold storage).
+
+See `benchmark/` for a runnable microbenchmark.
+
+## Building locally
+
+```
 ./gradlew publishToMavenLocal
+./gradlew :smoke-test:run     # correctness check
+./gradlew :benchmark:run      # latency + throughput tables
 ```
 
-Publishes `gg.norisk.webp:webp-natives:1.0.0` to `~/.m2/repository/`.
-Clientside modules pick it up via the existing `mavenLocal()` entry in
-`nrcRepositories()`.
+The native DLL is rebuilt via CMake (using libwebp v1.6.0 fetched as a
+CMake `FetchContent` dependency) every time the windows module's
+`processResources` runs. Requires:
+
+- Windows host (the windows module's CMake task is `onlyIf isWindows`)
+- Visual Studio 2022 Build Tools (or VS Community)
+- CMake 3.20+
+
+## Design notes
+
+- **Pure libwebp wrapping**: we link libwebp statically into our JNI DLL,
+  no separate runtime install needed. ~150 lines of C bridge.
+- **Java-8 bytecode target**: works on legacy Minecraft (1.7.10/1.8.9)
+  JVMs. Build-toolchain JDK 21, output `--release 8`.
+- **Zero-copy fast path on little-endian**: libwebp writes
+  `MODE_BGRA` bytes which are bit-identical to a Java
+  `BufferedImage.TYPE_INT_ARGB` `int[]` on little-endian. We pin the
+  `int[]` via `GetPrimitiveArrayCritical` and hand libwebp the pointer,
+  so decode is one malloc per call (the `BufferedImage` itself) instead
+  of three.
+- **Multi-threaded decode/encode**: `WebPDecoderConfig.options.use_threads = 1`
+  and `WebPConfig.thread_level = 1` enable libwebp's internal parallelism.
+
+## License
+
+Apache 2.0. libwebp is BSD-3-Clause (Google). libsharpyuv is BSD-3-Clause.
