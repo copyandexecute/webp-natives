@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>webp-natives - Maven Repository</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:780px;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#222}
+  h1{margin-top:0}
+  h2{margin-top:2rem}
+  pre{background:#f4f4f4;padding:1rem;border-radius:6px;overflow-x:auto}
+  code{background:#f4f4f4;padding:2px 6px;border-radius:3px}
+  a{color:#0366d6}
+</style></head><body>
+<h1>webp-natives</h1>
+<p>Public Maven repository for
+  <a href="https://github.com/copyandexecute/webp-natives">copyandexecute/webp-natives</a>.
+  No auth required. Backed by Google libwebp via JNI.</p>
+
+<h2>Aggregator (recommended — one dep, all platforms)</h2>
+<pre>repositories {
+    maven("https://copyandexecute.github.io/webp-natives/")
+}
+dependencies {
+    implementation("gg.norisk.webp:all:&lt;VERSION&gt;")
+}</pre>
+<p>Pulls in core + windows (DLLs x64/arm64) + linux (.so x64/aarch64) +
+   macos (universal dylib). At runtime, gg.norisk.webp.WebP picks the
+   matching native from the classpath via NativeLoader.</p>
+
+<h2>Individual modules</h2>
+<pre>implementation("gg.norisk.webp:core:&lt;VERSION&gt;")
+implementation("gg.norisk.webp:windows:&lt;VERSION&gt;")
+implementation("gg.norisk.webp:linux:&lt;VERSION&gt;")
+implementation("gg.norisk.webp:macos:&lt;VERSION&gt;")</pre>
+
+<h2>Versioning</h2>
+<p>Branch push: <code>YY.Q.BUILD-branch</code> (e.g. <code>26.2.5-main</code>).<br>
+   Tag push: <code>v1.0.0</code> &rarr; <code>1.0.0</code>.</p>
+
+<p><a href="gg/norisk/webp/">Browse artifacts &rarr;</a></p>
+</body></html>
