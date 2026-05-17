@@ -54,6 +54,17 @@ public final class WebPNative {
     /** Fallback decode to a freshly-allocated row-major RGBA byte buffer. */
     public static native byte[] decodeRGBA(byte[] data, int[] outDims);
 
+    /**
+     * Decode into a caller-supplied direct ByteBuffer. Output is BGRA bytes
+     * (matches BufferedImage.TYPE_INT_ARGB on LE; for OpenGL upload, use
+     * {@code GL_BGRA} as the format parameter).
+     *
+     * @param directBuffer must be allocated via {@link java.nio.ByteBuffer#allocateDirect}
+     *                     with capacity ≥ width*height*4
+     * @return 0 on success, negative on error
+     */
+    public static native int decodeBGRAIntoBuffer(byte[] data, java.nio.ByteBuffer directBuffer, int[] outDims);
+
     /** Fallback encode from a row-major RGBA byte buffer. */
     public static native byte[] encodeRGBA(byte[] rgba, int width, int height, float quality, boolean lossless, int method, float losslessQuality);
 

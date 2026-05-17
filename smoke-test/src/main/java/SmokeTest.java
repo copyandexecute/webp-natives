@@ -159,6 +159,67 @@ public class SmokeTest {
             System.out.println("[9] reset() then hasMoreFrames(): true");
         }
 
+        // Direct ByteBuffer decode: round-trip pixels via off-heap memory
+        gg.norisk.webp.WebPImage direct = gg.norisk.webp.WebP.decodeToBuffer(lossless);
+        if (direct.width() != 64 || direct.height() != 64) {
+            System.err.println("FAIL — decodeToBuffer dims " + direct.width() + "x" + direct.height());
+            System.exit(1);
+        }
+        if (!direct.pixels().isDirect()) {
+            System.err.println("FAIL — decodeToBuffer didn't return a direct buffer");
+            System.exit(1);
+        }
+        BufferedImage fromDirect = direct.toBufferedImage();
+        int directMm = 0;
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (img.getRGB(x, y) != fromDirect.getRGB(x, y)) directMm++;
+            }
+        }
+        System.out.println("[10] decodeToBuffer:                " + direct);
+        System.out.println("[10] is direct buffer:              " + direct.pixels().isDirect());
+        System.out.println("[10] toBufferedImage() mismatches:  " + directMm + " / 4096");
+        if (directMm != 0) {
+            System.err.println("FAIL — direct buffer roundtrip mismatched");
+            System.exit(1);
+        }
+
+        // File + Stream API round-trip
+        java.io.File tmp = java.io.File.createTempFile("webp-natives-smoke", ".webp");
+        tmp.deleteOnExit();
+        gg.norisk.webp.WebP.encodeLossless(img, tmp);
+        BufferedImage fromFile = gg.norisk.webp.WebP.decode(tmp);
+        int fileMm = 0;
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (img.getRGB(x, y) != fromFile.getRGB(x, y)) fileMm++;
+            }
+        }
+        System.out.println("[11] file round-trip ("
+            + tmp.length() + " bytes) mismatches: " + fileMm + " / 4096");
+        if (fileMm != 0) {
+            System.err.println("FAIL — file roundtrip mismatched");
+            System.exit(1);
+        }
+
+        // Stream round-trip
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        gg.norisk.webp.WebP.encodeLossless(img, baos);
+        BufferedImage fromStream = gg.norisk.webp.WebP.decode(
+            new java.io.ByteArrayInputStream(baos.toByteArray()));
+        int streamMm = 0;
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (img.getRGB(x, y) != fromStream.getRGB(x, y)) streamMm++;
+            }
+        }
+        System.out.println("[11] stream round-trip ("
+            + baos.size() + " bytes) mismatches: " + streamMm + " / 4096");
+        if (streamMm != 0) {
+            System.err.println("FAIL — stream roundtrip mismatched");
+            System.exit(1);
+        }
+
         System.out.println("\nALL CHECKS PASSED.");
     }
 }

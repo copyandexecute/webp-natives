@@ -6,6 +6,13 @@ import gg.norisk.webp.internal.WebPNative;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.awt.image.DataBufferInt;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
 
 /**
  * Public WEBP encode/decode facade. Backed by libwebp via JNI.
@@ -71,6 +78,59 @@ public final class WebP {
         return img;
     }
 
+    /** Decode WEBP read from {@code file}. */
+    public static BufferedImage decode(File file) throws IOException {
+        return decode(Files.readAllBytes(file.toPath()));
+    }
+
+    /** Decode WEBP read from {@code in} (fully consumed). */
+    public static BufferedImage decode(InputStream in) throws IOException {
+        return decode(readAllBytes(in));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Direct-ByteBuffer decode (for GPU upload / off-heap pipelines)
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Decode WEBP bytes into a {@link WebPImage} whose pixel data lives in a
+     * <em>direct</em> {@link ByteBuffer} (off-heap, BGRA byte order). Use this
+     * when you want to feed the result straight to {@code glTexImage2D} or
+     * another native consumer without paying for a Java-heap roundtrip.
+     */
+    public static WebPImage decodeToBuffer(byte[] data) throws WebPException {
+        requireBytes(data);
+        int[] info = WebPNative.getInfo(data);
+        if (info == null) {
+            throw new WebPException("Failed to decode WEBP (invalid stream or unsupported features)");
+        }
+        int w = info[0];
+        int h = info[1];
+
+        ByteBuffer buf = ByteBuffer.allocateDirect(w * h * 4);
+        int[] outDims = new int[2];
+        int rc = WebPNative.decodeBGRAIntoBuffer(data, buf, outDims);
+        if (rc != 0 || outDims[0] != w || outDims[1] != h) {
+            throw new WebPException("WEBP direct decode failed (code " + rc + ")");
+        }
+        buf.position(0).limit(w * h * 4);
+        return new WebPImage(buf, w, h);
+    }
+
+    /** Direct-buffer decode from {@code file}. */
+    public static WebPImage decodeToBuffer(File file) throws IOException {
+        return decodeToBuffer(Files.readAllBytes(file.toPath()));
+    }
+
+    /** Direct-buffer decode from {@code in} (fully consumed). */
+    public static WebPImage decodeToBuffer(InputStream in) throws IOException {
+        return decodeToBuffer(readAllBytes(in));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Animated decode
+    // ─────────────────────────────────────────────────────────────────
+
     /**
      * Open an animated WEBP for frame-by-frame decoding. Accepts both
      * animated and static streams (static decodes as a 1-frame animation).
@@ -80,6 +140,16 @@ public final class WebP {
      */
     public static WebPAnimDecoder decodeAnimated(byte[] data) throws WebPException {
         return WebPAnimDecoder.open(data);
+    }
+
+    /** Animated decode from {@code file}. */
+    public static WebPAnimDecoder decodeAnimated(File file) throws IOException {
+        return decodeAnimated(Files.readAllBytes(file.toPath()));
+    }
+
+    /** Animated decode from {@code in} (fully consumed). */
+    public static WebPAnimDecoder decodeAnimated(InputStream in) throws IOException {
+        return decodeAnimated(readAllBytes(in));
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -131,6 +201,30 @@ public final class WebP {
     /** Encode {@code image} as lossless WEBP with the given preset. */
     public static byte[] encodeLossless(BufferedImage image, EncodePreset preset) throws WebPException {
         return encode(image, 1f, /* lossless = */ true, preset);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  File + Stream encode convenience
+    // ─────────────────────────────────────────────────────────────────
+
+    /** Encode lossy WEBP and write to {@code out}. */
+    public static void encode(BufferedImage image, float quality, OutputStream out) throws IOException {
+        out.write(encode(image, quality));
+    }
+
+    /** Encode lossy WEBP and write to {@code file}. */
+    public static void encode(BufferedImage image, float quality, File file) throws IOException {
+        Files.write(file.toPath(), encode(image, quality));
+    }
+
+    /** Encode lossless WEBP and write to {@code out}. */
+    public static void encodeLossless(BufferedImage image, OutputStream out) throws IOException {
+        out.write(encodeLossless(image));
+    }
+
+    /** Encode lossless WEBP and write to {@code file}. */
+    public static void encodeLossless(BufferedImage image, File file) throws IOException {
+        Files.write(file.toPath(), encodeLossless(image));
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -198,5 +292,16 @@ public final class WebP {
 
     private static float clamp(float v, float lo, float hi) {
         return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    /** Java 8 doesn't have InputStream.readAllBytes — minimal local impl. */
+    private static byte[] readAllBytes(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = in.read(chunk)) != -1) {
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
     }
 }

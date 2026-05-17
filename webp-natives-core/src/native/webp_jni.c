@@ -530,3 +530,67 @@ Java_gg_norisk_webp_internal_WebPNative_animDecoderClose(JNIEnv* env, jclass cls
     }
     free(handle);
 }
+
+/* ──────────────────────────────────────────────────────────────────
+ *  Direct ByteBuffer decode
+ *
+ *  Decodes directly into a Java-side direct ByteBuffer that the caller
+ *  allocated via ByteBuffer.allocateDirect(width*height*4). Skips the
+ *  BufferedImage roundtrip entirely — output is BGRA bytes in memory,
+ *  ready for glTexImage2D(... GL_BGRA, GL_UNSIGNED_BYTE, buffer).
+ *
+ *  Java owns the ByteBuffer's lifetime (the JDK's own Cleaner releases
+ *  the off-heap memory when the buffer is GC'd) — we just read off the
+ *  raw pointer with GetDirectBufferAddress and let libwebp write into
+ *  it via WebPDecode with is_external_memory = 1.
+ * ────────────────────────────────────────────────────────────────── */
+
+JNIEXPORT jint JNICALL
+Java_gg_norisk_webp_internal_WebPNative_decodeBGRAIntoBuffer(JNIEnv* env, jclass cls,
+                                                              jbyteArray data,
+                                                              jobject directBuffer,
+                                                              jintArray outDims) {
+    (void) cls;
+    if (data == NULL || directBuffer == NULL || outDims == NULL) return -1;
+
+    jsize dataLen = (*env)->GetArrayLength(env, data);
+    if (dataLen <= 0) return -1;
+    if ((*env)->GetArrayLength(env, outDims) < 2) return -1;
+
+    uint8_t* bufPtr = (uint8_t*) (*env)->GetDirectBufferAddress(env, directBuffer);
+    if (bufPtr == NULL) return -1;
+    jlong bufCap = (*env)->GetDirectBufferCapacity(env, directBuffer);
+    if (bufCap <= 0) return -1;
+
+    jbyte* dataBytes = (*env)->GetByteArrayElements(env, data, NULL);
+    if (dataBytes == NULL) return -1;
+
+    int width = 0, height = 0;
+    if (!WebPGetInfo((const uint8_t*) dataBytes, (size_t) dataLen, &width, &height)) {
+        (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+        return -2;
+    }
+    if (width <= 0 || height <= 0
+        || (jlong) width * (jlong) height * 4 > bufCap) {
+        (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+        return -3;
+    }
+
+    WebPDecoderConfig config;
+    WebPInitDecoderConfig(&config);
+    config.options.use_threads       = 1;
+    config.output.colorspace         = MODE_BGRA;
+    config.output.u.RGBA.rgba        = bufPtr;
+    config.output.u.RGBA.size        = (size_t) width * height * 4;
+    config.output.u.RGBA.stride      = width * 4;
+    config.output.is_external_memory = 1;
+
+    VP8StatusCode status = WebPDecode((const uint8_t*) dataBytes, (size_t) dataLen, &config);
+    (*env)->ReleaseByteArrayElements(env, data, dataBytes, JNI_ABORT);
+
+    if (status != VP8_STATUS_OK) return -10 - (jint) status;
+
+    jint dims[2] = { width, height };
+    (*env)->SetIntArrayRegion(env, outDims, 0, 2, dims);
+    return 0;
+}
