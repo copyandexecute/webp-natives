@@ -27,3 +27,10 @@ dependencies {
 application {
     mainClass.set("SmokeTest")
 }
+
+tasks.register<JavaExec>("runWebm") {
+    group = "verification"
+    description = "VP9/WebM encode/decode smoke test — writes build/webm-smoke-test.webm"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("WebmSmokeTest")
+}

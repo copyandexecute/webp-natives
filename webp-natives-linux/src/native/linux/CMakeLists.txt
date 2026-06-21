@@ -14,6 +14,12 @@ if (NOT DEFINED WEBP_JNI_SOURCE)
     message(FATAL_ERROR "WEBP_JNI_SOURCE must be set via -DWEBP_JNI_SOURCE=<path>")
 endif()
 
+set(WEBP_CORE_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../../../../webp-natives-core/src/native")
+set(WEBP_NATIVE_SOURCES
+    "${WEBP_JNI_SOURCE}"
+    "${WEBP_CORE_NATIVE}/webm/webm_jni_stub.c"
+)
+
 # Position-Independent Code is mandatory for .so on Linux.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -55,7 +61,7 @@ FetchContent_MakeAvailable(libwebp)
 # ─────────────────────────────────────────────────────────────────
 #  JNI bridge .so
 # ─────────────────────────────────────────────────────────────────
-add_library(webp_natives SHARED "${WEBP_JNI_SOURCE}")
+add_library(webp_natives SHARED ${WEBP_NATIVE_SOURCES})
 
 target_compile_features(webp_natives PRIVATE c_std_11)
 target_compile_options(webp_natives PRIVATE -fvisibility=hidden -O3)
