@@ -11,3 +11,6 @@ local.properties
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+
+# Local libvpx build tooling — not vendored in git
+tools/nasm/

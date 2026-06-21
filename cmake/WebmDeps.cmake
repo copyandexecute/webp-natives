@@ -1,10 +1,17 @@
 
 include(FetchContent)
 
-set(WEBM_NASM_DIR "${CMAKE_CURRENT_LIST_DIR}/../tools/nasm/nasm-3.01")
-if (NOT EXISTS "${WEBM_NASM_DIR}/nasm.exe")
-    message(FATAL_ERROR "NASM not found at ${WEBM_NASM_DIR}/nasm.exe — extract nasm-3.01-win64.zip there")
+find_program(WEBM_NASM nasm.exe
+    HINTS
+        "${CMAKE_CURRENT_LIST_DIR}/../tools/nasm/nasm-3.01"
+        "C:/Program Files/NASM"
+)
+if (NOT WEBM_NASM)
+    message(FATAL_ERROR
+        "NASM not found. Install from https://www.nasm.us/ (add to PATH), "
+        "or extract nasm-3.01-win64.zip to tools/nasm/nasm-3.01/ (gitignored).")
 endif()
+get_filename_component(WEBM_NASM_DIR "${WEBM_NASM}" DIRECTORY)
 
 if (NOT EXISTS "C:/msys64/usr/bin/make.exe")
     message(FATAL_ERROR "MSYS2 with 'make' and 'diffutils' is required. Install: winget install MSYS2.MSYS2, then run: pacman -Sy make diffutils")
