@@ -1,0 +1,118 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "gg.norisk.webp",
+    "module": "macos",
+    "version": "26.2.20-main",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.4.1"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "gg.norisk.webp",
+          "module": "core",
+          "version": {
+            "requires": "26.2.20-main"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "macos-26.2.20-main.jar",
+          "url": "macos-26.2.20-main.jar",
+          "size": 2023217,
+          "sha512": "22cfc7aa9086586be1d5eabf5ecae9768116191db82b49df2c64f407c004c7505fa565af2063d42a81e3c201f2733fcb664d70bea2c6db8203a19a3c3c116700",
+          "sha256": "955cbcdbfcebc1593365d07cf582f395ad2e895d6bb1d46321cf4cb838598708",
+          "sha1": "02c629709241622f5d85120eee6f7fe402282c0a",
+          "md5": "b743da27237dd71d4f07aaaa5ca7ffcb"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "gg.norisk.webp",
+          "module": "core",
+          "version": {
+            "requires": "26.2.20-main"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "macos-26.2.20-main.jar",
+          "url": "macos-26.2.20-main.jar",
+          "size": 2023217,
+          "sha512": "22cfc7aa9086586be1d5eabf5ecae9768116191db82b49df2c64f407c004c7505fa565af2063d42a81e3c201f2733fcb664d70bea2c6db8203a19a3c3c116700",
+          "sha256": "955cbcdbfcebc1593365d07cf582f395ad2e895d6bb1d46321cf4cb838598708",
+          "sha1": "02c629709241622f5d85120eee6f7fe402282c0a",
+          "md5": "b743da27237dd71d4f07aaaa5ca7ffcb"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "macos-26.2.20-main-sources.jar",
+          "url": "macos-26.2.20-main-sources.jar",
+          "size": 2023217,
+          "sha512": "22cfc7aa9086586be1d5eabf5ecae9768116191db82b49df2c64f407c004c7505fa565af2063d42a81e3c201f2733fcb664d70bea2c6db8203a19a3c3c116700",
+          "sha256": "955cbcdbfcebc1593365d07cf582f395ad2e895d6bb1d46321cf4cb838598708",
+          "sha1": "02c629709241622f5d85120eee6f7fe402282c0a",
+          "md5": "b743da27237dd71d4f07aaaa5ca7ffcb"
+        }
+      ]
+    },
+    {
+      "name": "javadocElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "javadoc",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "macos-26.2.20-main-javadoc.jar",
+          "url": "macos-26.2.20-main-javadoc.jar",
+          "size": 261,
+          "sha512": "1487e5a20c9e4d74f298e07c42e96a61be11b7a768c3fbc199ee138cd68e1fc2267d1cfe3f11f288acc05df755315344d052cc5f6f751f126ab4fe1caa5125ea",
+          "sha256": "c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3",
+          "sha1": "2ad14aed781c4a73ed4dbb421966d408a0a06686",
+          "md5": "f43436d6bec321290f6af228ad602604"
+        }
+      ]
+    }
+  ]
+}
