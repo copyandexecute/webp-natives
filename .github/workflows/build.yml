@@ -78,6 +78,17 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
+      # libvpx's x86/x64 SIMD needs the NASM assembler. vcpkg auto-acquires it
+      # on Windows, but on Linux/macOS its libvpx port wants NASM from the
+      # system package manager. (arm64 builds use the GNU assembler and don't
+      # need it, but installing is harmless.)
+      - name: Install NASM (libvpx dependency)
+        if: ${{ runner.os == 'Linux' || runner.os == 'macOS' }}
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y nasm; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install nasm; fi
+        shell: bash
+
       # processResources triggers the platform's CMake task chain via the
       # dependsOn(copyXxx) wiring in each module's build.gradle.kts. On
       # macOS we have two jobs on the same arm64 runner — one builds the
