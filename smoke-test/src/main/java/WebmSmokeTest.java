@@ -32,6 +32,7 @@ public class WebmSmokeTest {
 
         fidelityScenario();   // small clip, strict pixel-fidelity gate
         realisticScenario();  // 720p clip, throughput + proves decode stays lazy
+        oddDimensionScenario(); // odd w/h — regression guard for the chroma-overflow crash
 
         System.out.println("\nWEBM SMOKE TEST PASSED.");
     }
@@ -173,6 +174,43 @@ public class WebmSmokeTest {
             }
             // peakHeapDelta already printed above (diagnostic only).
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Scenario 3 — odd dimensions. 4:2:0 chroma planes are
+    //  ceil(w/2) x ceil(h/2); a tight hand-packed I420 buffer used to size
+    //  them with floor and overflow on odd width/height, corrupting the heap
+    //  (STATUS_HEAP_CORRUPTION 0xC0000374) during encode. McReal captures
+    //  arbitrary window sizes, so odd dimensions are real input. This must
+    //  encode + decode cleanly.
+    // ─────────────────────────────────────────────────────────────────
+    private static void oddDimensionScenario() throws Exception {
+        final int W = 641, H = 361, N = 12;
+        System.out.println("\n=== odd-dimension scenario: " + W + "x" + H + ", " + N + " frames ===");
+
+        BufferedImage[] frames = new BufferedImage[N];
+        int[] durationsMs = new int[N];
+        for (int i = 0; i < N; i++) {
+            frames[i] = makeFrame(W, H, i, N);
+            durationsMs[i] = FRAME_MS;
+        }
+
+        // Pre-fix this call overran the chroma planes and crashed the JVM.
+        byte[] webm = WebM.encodeFast(frames, durationsMs);
+        System.out.println("[odd] encoded " + webm.length + " bytes (no crash)");
+
+        try (WebMDecoder decoder = WebM.decode(webm)) {
+            WebMInfo info = decoder.info();
+            System.out.println("[odd] decoded info: " + info);
+            if (info.width() != W || info.height() != H) fail("odd-dim: unexpected size " + info);
+            int n = 0;
+            while (decoder.hasMoreFrames() && n < N) {
+                decoder.nextFrame();
+                n++;
+            }
+            if (n < N - 2) fail("odd-dim: decoded too few frames (" + n + ")");
+        }
+        System.out.println("[odd] roundtrip ok");
     }
 
     private static BufferedImage makeFrame(int w, int h, int index, int total) {

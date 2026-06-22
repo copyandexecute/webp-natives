@@ -72,8 +72,12 @@ private:
     size_t size_;
 };
 
+// Writes into caller-provided I420 planes using their real strides. Chroma is
+// indexed with the actual UV stride (= ceil(width/2) for an allocated image),
+// so odd width/height never overflow the planes.
 void argb_to_i420(const uint32_t* argb, int width, int height,
-                  uint8_t* y, uint8_t* u, uint8_t* v) {
+                  uint8_t* y, int y_stride,
+                  uint8_t* u, uint8_t* v, int uv_stride) {
     for (int j = 0; j < height; ++j) {
         for (int i = 0; i < width; ++i) {
             const uint32_t p = argb[j * width + i];
@@ -81,11 +85,11 @@ void argb_to_i420(const uint32_t* argb, int width, int height,
             const int g = (p >> 8) & 0xFF;
             const int r = (p >> 16) & 0xFF;
             const int y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y[j * width + i] = static_cast<uint8_t>(y_val < 0 ? 0 : (y_val > 255 ? 255 : y_val));
+            y[j * y_stride + i] = static_cast<uint8_t>(y_val < 0 ? 0 : (y_val > 255 ? 255 : y_val));
             if ((j & 1) == 0 && (i & 1) == 0) {
                 const int u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
                 const int v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                const int uv_idx = (j / 2) * (width / 2) + (i / 2);
+                const int uv_idx = (j / 2) * uv_stride + (i / 2);
                 u[uv_idx] = static_cast<uint8_t>(u_val < 0 ? 0 : (u_val > 255 ? 255 : u_val));
                 v[uv_idx] = static_cast<uint8_t>(v_val < 0 ? 0 : (v_val > 255 ? 255 : v_val));
             }
@@ -167,38 +171,36 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
     info->set_timecode_scale(1000000);  // ns per tick → 1 tick = 1ms
     info->set_writing_app("webp-natives");
 
-    const size_t y_size = static_cast<size_t>(width) * height;
-    const size_t uv_size = y_size / 4;
-    std::vector<uint8_t> y_plane(y_size);
-    std::vector<uint8_t> u_plane(uv_size);
-    std::vector<uint8_t> v_plane(uv_size);
-    std::vector<uint8_t> i420(y_size + uv_size * 2);
+    // Allocate the I420 source image once and reuse it per frame. libvpx sizes
+    // the planes with the correct (ceil) chroma dimensions and its own aligned
+    // strides, so odd widths/heights can't overflow — unlike a hand-packed
+    // tight buffer, which wrote past the chroma planes on odd dimensions and
+    // corrupted the heap. align=32 matches the encoder's SIMD expectations.
+    vpx_image_t img;
+    if (vpx_img_alloc(&img, VPX_IMG_FMT_I420, width, height, 32) == nullptr) {
+        vpx_codec_destroy(&codec);
+        return false;
+    }
 
     int64_t pts_ms = 0;
     int total_duration_ms = 0;
 
     for (size_t fi = 0; fi < frames.size(); ++fi) {
         if (static_cast<int>(frames[fi].size()) < width * height) {
+            vpx_img_free(&img);
             vpx_codec_destroy(&codec);
             return false;
         }
 
         argb_to_i420(frames[fi].data(), width, height,
-                     y_plane.data(), u_plane.data(), v_plane.data());
-
-        uint8_t* dst_y = i420.data();
-        uint8_t* dst_u = dst_y + y_size;
-        uint8_t* dst_v = dst_u + uv_size;
-        std::memcpy(dst_y, y_plane.data(), y_size);
-        std::memcpy(dst_u, u_plane.data(), uv_size);
-        std::memcpy(dst_v, v_plane.data(), uv_size);
-
-        vpx_image_t img;
-        vpx_img_wrap(&img, VPX_IMG_FMT_I420, width, height, 1, i420.data());
+                     img.planes[VPX_PLANE_Y], img.stride[VPX_PLANE_Y],
+                     img.planes[VPX_PLANE_U], img.planes[VPX_PLANE_V],
+                     img.stride[VPX_PLANE_U]);
 
         const vpx_codec_err_t enc_err = vpx_codec_encode(
             &codec, &img, pts_ms, durations_ms[fi], 0, VPX_DL_REALTIME);
         if (enc_err != VPX_CODEC_OK) {
+            vpx_img_free(&img);
             vpx_codec_destroy(&codec);
             return false;
         }
@@ -211,6 +213,7 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
                 const uint64_t ts_ns = static_cast<uint64_t>(pts_ms) * 1000000ULL;
                 if (!segment.AddFrame(static_cast<const uint8_t*>(pkt->data.frame.buf),
                                       pkt->data.frame.sz, track, ts_ns, keyframe)) {
+                    vpx_img_free(&img);
                     vpx_codec_destroy(&codec);
                     return false;
                 }
@@ -222,6 +225,7 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
     }
 
     info->set_duration(static_cast<double>(total_duration_ms));
+    vpx_img_free(&img);
 
     if (!segment.Finalize()) {
         vpx_codec_destroy(&codec);
