@@ -1,8 +1,6 @@
 {
-  "$comment": "VP9 codec for the WebM stack. libvpx has no CMake build of its own; vcpkg's port handles the autotools/NASM/per-arch-target mess for us. libwebm is fetched separately via FetchContent (no vcpkg port exists). The builtin-baseline pins exact port versions for reproducibility — bump it to move libvpx forward.",
+  "$comment": "VP9 codec for the WebM stack. libvpx has no CMake build of its own; vcpkg's port handles the autotools/NASM/per-arch-target mess for us. libwebm is fetched separately via FetchContent (no vcpkg port exists). No builtin-baseline: we resolve libvpx from whatever vcpkg checkout the build uses (the runner's preinstalled vcpkg, or VCPKG_ROOT). To pin exactly, vendor vcpkg as a submodule and add its commit as builtin-baseline.",
   "name": "webp-natives",
-  "version-string": "0.0.0",
-  "builtin-baseline": "a0b1c8d3a477c1cb4813d8e127a56961707ca42b",
   "dependencies": [
     "libvpx"
   ]
