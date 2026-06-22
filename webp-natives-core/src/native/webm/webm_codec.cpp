@@ -164,7 +164,7 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
     }
     video->set_codec_id(mkvmuxer::Tracks::kVp9CodecId);
     mkvmuxer::SegmentInfo* info = segment.GetSegmentInfo();
-    info->set_timecode_scale(1'000'000);
+    info->set_timecode_scale(1000000);  // ns per tick → 1 tick = 1ms
     info->set_writing_app("webp-natives");
 
     const size_t y_size = static_cast<size_t>(width) * height;
@@ -208,7 +208,7 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
         while ((pkt = vpx_codec_get_cx_data(&codec, &iter)) != nullptr) {
             if (pkt->kind == VPX_CODEC_CX_FRAME_PKT) {
                 const bool keyframe = (pkt->data.frame.flags & VPX_FRAME_IS_KEY) != 0;
-                const uint64_t ts_ns = static_cast<uint64_t>(pts_ms) * 1'000'000ULL;
+                const uint64_t ts_ns = static_cast<uint64_t>(pts_ms) * 1000000ULL;
                 if (!segment.AddFrame(static_cast<const uint8_t*>(pkt->data.frame.buf),
                                       pkt->data.frame.sz, track, ts_ns, keyframe)) {
                     vpx_codec_destroy(&codec);
