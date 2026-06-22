@@ -30,7 +30,10 @@ application {
 
 tasks.register<JavaExec>("runWebm") {
     group = "verification"
-    description = "VP9/WebM encode/decode smoke test — writes build/webm-smoke-test.webm"
+    description = "VP9/WebM encode/decode smoke test — writes build/webm-smoke-test*.webm"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("WebmSmokeTest")
+    // The 720p scenario holds ~100 ARGB frames (~360 MB) for the array-based
+    // encode call; give it headroom independent of the runner's default heap.
+    maxHeapSize = "2g"
 }

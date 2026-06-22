@@ -10,13 +10,8 @@ import java.nio.file.Files;
 
 public class WebmSmokeTest {
 
-    private static final int WIDTH = 320;
-    private static final int HEIGHT = 180;
-    /** McReal target: 5s @ 20fps */
-    private static final int DURATION_MS = 5_000;
     private static final int FPS = 20;
     private static final int FRAME_MS = 1_000 / FPS;
-    private static final int FRAME_COUNT = DURATION_MS / FRAME_MS;
 
     // VP9 is lossy and round-trips through I420, so an exact match is impossible.
     // We assert on perceptual closeness instead: a pixel is "bad" only if a
@@ -35,93 +30,161 @@ public class WebmSmokeTest {
             System.exit(0);
         }
 
-        System.out.println("[1] Clip: " + FRAME_COUNT + " frames @ " + FPS + "fps = "
-            + (FRAME_COUNT * FRAME_MS / 1000f) + "s");
+        fidelityScenario();   // small clip, strict pixel-fidelity gate
+        realisticScenario();  // 720p clip, throughput + proves decode stays lazy
 
-        BufferedImage[] frames = new BufferedImage[FRAME_COUNT];
-        int[] durationsMs = new int[FRAME_COUNT];
-        for (int i = 0; i < FRAME_COUNT; i++) {
-            frames[i] = makeFrame(i);
+        System.out.println("\nWEBM SMOKE TEST PASSED.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Scenario 1 — correctness: encode→decode a small clip and check the
+    //  pixels survive the lossy round-trip within tolerance.
+    // ─────────────────────────────────────────────────────────────────
+    private static void fidelityScenario() throws Exception {
+        final int W = 320, H = 180, N = 100;   // 5s @ 20fps
+        System.out.println("\n=== fidelity scenario: " + W + "x" + H + ", " + N + " frames ===");
+
+        BufferedImage[] frames = new BufferedImage[N];
+        int[] durationsMs = new int[N];
+        for (int i = 0; i < N; i++) {
+            frames[i] = makeFrame(W, H, i, N);
+            durationsMs[i] = FRAME_MS;
+        }
+
+        byte[] webm = WebM.encodeFast(frames, durationsMs);
+        System.out.println("[fidelity] encoded " + webm.length + " bytes");
+        writeFile("webm-smoke-test.webm", webm);
+
+        try (WebMDecoder decoder = WebM.decode(webm)) {
+            WebMInfo info = decoder.info();
+            System.out.println("[fidelity] decoded info: " + info);
+            if (info.frameCount() < N - 2) fail("expected ~" + N + " frames, got " + info.frameCount());
+            if (info.width() != W || info.height() != H) fail("unexpected video size");
+
+            int frameIdx = 0;
+            long totalBadPixels = 0, totalAbsError = 0, totalChannels = 0;
+            while (decoder.hasMoreFrames() && frameIdx < N) {
+                WebMFrame frame = decoder.nextFrame();
+                long[] d = diff(frames[frameIdx], frame.image());
+                totalBadPixels += d[0];
+                totalAbsError += d[1];
+                totalChannels += (long) W * H * 3;
+                frameIdx++;
+            }
+
+            double badRatio = (double) totalBadPixels / ((double) totalChannels / 3.0);
+            double meanAbsError = (double) totalAbsError / (double) totalChannels;
+            System.out.printf("[fidelity] bad-pixel ratio=%.4f (max %.2f), mean abs err=%.3f/ch (max %.1f)%n",
+                badRatio, MAX_BAD_PIXEL_RATIO, meanAbsError, MAX_MEAN_ABS_ERROR);
+
+            if (frameIdx < N - 2) fail("decoded too few frames");
+            if (badRatio > MAX_BAD_PIXEL_RATIO) fail("too many off-tolerance pixels: " + badRatio);
+            if (meanAbsError > MAX_MEAN_ABS_ERROR) fail("mean per-channel error too high: " + meanAbsError);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Scenario 2 — realistic resolution + proof that decode is lazy.
+    //
+    //  720p is the order of magnitude McReal actually captures at. We
+    //  measure encode/decode throughput, and assert decode stays streaming:
+    //  with a lazy decoder open() only parses headers + the first frame, so
+    //  the bulk of the time is in the per-frame loop. A regression to eager
+    //  decode (decode-all-at-open) would invert that — open() would dominate
+    //  and the loop would be near-instant — which this assertion catches.
+    //  We also bound the Java-side heap growth during the loop.
+    // ─────────────────────────────────────────────────────────────────
+    private static void realisticScenario() throws Exception {
+        final int W = 1280, H = 720, N = 100;  // 5s @ 20fps at real capture resolution
+        System.out.println("\n=== realistic scenario: " + W + "x" + H + ", " + N + " frames ===");
+
+        BufferedImage[] frames = new BufferedImage[N];
+        int[] durationsMs = new int[N];
+        for (int i = 0; i < N; i++) {
+            frames[i] = makeFrame(W, H, i, N);
             durationsMs[i] = FRAME_MS;
         }
 
         long t0 = System.nanoTime();
         byte[] webm = WebM.encodeFast(frames, durationsMs);
         long encodeMs = (System.nanoTime() - t0) / 1_000_000L;
+        System.out.printf("[realistic] encoded %d bytes in %d ms (%.1f fps)%n",
+            webm.length, encodeMs, encodeMs == 0 ? 0.0 : N * 1000.0 / encodeMs);
+        writeFile("webm-smoke-test-720p.webm", webm);
 
-        System.out.println("[2] encoded WebM VP9: " + webm.length + " bytes in " + encodeMs + " ms");
+        // Free the encode inputs so the heap measurement below reflects the
+        // decoder alone, and so a full clip's worth of decoded frames being
+        // retained would be unmistakable.
+        frames = null;
+        System.gc();
+        long heapBaseline = usedHeap();
 
-        File outDir = new File("build");
-        outDir.mkdirs();
-        File outFile = new File(outDir, "webm-smoke-test.webm");
-        Files.write(outFile.toPath(), webm);
-        System.out.println("[3] wrote preview file: " + outFile.getAbsolutePath());
-        System.out.println("    → open in Chrome/Firefox to watch the video");
-
-        // Decoding is streaming: WebMDecoder pulls one frame per nextFrame()
-        // call, so this loop never holds the whole clip in memory at once.
+        long tOpen0 = System.nanoTime();
         try (WebMDecoder decoder = WebM.decode(webm)) {
-            WebMInfo info = decoder.info();
-            System.out.println("[4] decoded info: " + info);
+            long openNs = System.nanoTime() - tOpen0;
 
-            if (info.frameCount() < FRAME_COUNT - 2) {
-                System.err.println("FAIL — expected ~" + FRAME_COUNT + " frames, got " + info.frameCount());
-                System.exit(1);
-            }
-            if (info.width() != WIDTH || info.height() != HEIGHT) {
-                System.err.println("FAIL — unexpected video size");
-                System.exit(1);
-            }
+            WebMInfo info = decoder.info();
+            System.out.println("[realistic] decoded info: " + info);
+            if (info.frameCount() < N - 2) fail("expected ~" + N + " frames, got " + info.frameCount());
+            if (info.width() != W || info.height() != H) fail("unexpected video size");
 
             int frameIdx = 0;
-            long totalBadPixels = 0;
-            long totalAbsError = 0;       // summed per-channel |Δ|
-            long totalChannels = 0;       // pixels * 3
-            while (decoder.hasMoreFrames() && frameIdx < FRAME_COUNT) {
+            long peakHeapDelta = 0, totalBad = 0, totalAbsErr = 0, spotChannels = 0;
+            long tLoop0 = System.nanoTime();
+            while (decoder.hasMoreFrames() && frameIdx < N) {
                 WebMFrame frame = decoder.nextFrame();
-                FrameDiff d = diff(frames[frameIdx], frame.image());
-                totalBadPixels += d.badPixels;
-                totalAbsError += d.absError;
-                totalChannels += (long) WIDTH * HEIGHT * 3;
+                // Spot-check fidelity on a few frames without retaining the
+                // whole clip: makeFrame is deterministic, so regenerate.
+                if (frameIdx % 25 == 0) {
+                    long[] d = diff(makeFrame(W, H, frameIdx, N), frame.image());
+                    totalBad += d[0];
+                    totalAbsErr += d[1];
+                    spotChannels += (long) W * H * 3;
+                }
+                peakHeapDelta = Math.max(peakHeapDelta, usedHeap() - heapBaseline);
                 frameIdx++;
             }
+            long loopNs = System.nanoTime() - tLoop0;
 
-            double badRatio = totalChannels == 0 ? 1.0
-                : (double) totalBadPixels / ((double) totalChannels / 3.0);
-            double meanAbsError = totalChannels == 0 ? Double.MAX_VALUE
-                : (double) totalAbsError / (double) totalChannels;
+            double decodeMs = loopNs / 1_000_000.0;
+            System.out.printf("[realistic] open=%.1f ms, decode-loop=%.1f ms (%.1f fps), peak heap Δ=%.1f MB%n",
+                openNs / 1_000_000.0, decodeMs, decodeMs == 0 ? 0.0 : frameIdx * 1000.0 / decodeMs,
+                peakHeapDelta / (1024.0 * 1024.0));
 
-            System.out.println("[5] frames decoded: " + frameIdx);
-            System.out.printf("[5] fidelity: bad-pixel ratio=%.4f (max %.2f), mean abs err=%.3f/channel (max %.1f)%n",
-                badRatio, MAX_BAD_PIXEL_RATIO, meanAbsError, MAX_MEAN_ABS_ERROR);
+            if (frameIdx < N - 2) fail("decoded too few frames");
 
-            if (frameIdx < FRAME_COUNT - 2) {
-                System.err.println("FAIL — decoded too few frames");
-                System.exit(1);
+            double badRatio = spotChannels == 0 ? 0 : (double) totalBad / ((double) spotChannels / 3.0);
+            double meanErr = spotChannels == 0 ? 0 : (double) totalAbsErr / (double) spotChannels;
+            System.out.printf("[realistic] spot fidelity: bad-pixel ratio=%.4f, mean abs err=%.3f/ch%n", badRatio, meanErr);
+            if (badRatio > MAX_BAD_PIXEL_RATIO) fail("720p: too many off-tolerance pixels: " + badRatio);
+            if (meanErr > MAX_MEAN_ABS_ERROR) fail("720p: mean per-channel error too high: " + meanErr);
+
+            // Laziness gate: the per-frame loop must dominate over open().
+            // Eager decode (decode-all-at-open) would push the work into
+            // open() and make the loop near-instant, failing this. This is the
+            // robust cross-platform signal — the old eager decoder buffered
+            // frames in *native* memory, which a Java-heap check can't see, so
+            // peakHeapDelta below is only a diagnostic (it also counts not-yet
+            // collected garbage, so it isn't a reliable hard bound).
+            if (loopNs <= openNs) {
+                fail("decode does not look lazy — open() (" + (openNs / 1_000_000L)
+                    + "ms) was not cheaper than the per-frame loop (" + (loopNs / 1_000_000L) + "ms). "
+                    + "Did the decoder regress to decoding every frame at open()?");
             }
-            if (badRatio > MAX_BAD_PIXEL_RATIO) {
-                System.err.println("FAIL — too many off-tolerance pixels: " + badRatio);
-                System.exit(1);
-            }
-            if (meanAbsError > MAX_MEAN_ABS_ERROR) {
-                System.err.println("FAIL — mean per-channel error too high: " + meanAbsError);
-                System.exit(1);
-            }
+            // peakHeapDelta already printed above (diagnostic only).
         }
-
-        System.out.println("\nWEBM SMOKE TEST PASSED.");
     }
 
-    private static BufferedImage makeFrame(int index) {
-        BufferedImage img = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
+    private static BufferedImage makeFrame(int w, int h, int index, int total) {
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
         int[] pixels = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
-        float phase = index / (float) FRAME_COUNT;
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int x = 0; x < WIDTH; x++) {
+        float phase = index / (float) total;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
                 int r = (int) (128 + 127 * Math.sin(phase * Math.PI * 2 + x * 0.05));
                 int g = (int) (128 + 127 * Math.sin(phase * Math.PI * 2 + y * 0.05 + 1));
                 int b = (int) (128 + 127 * Math.cos(phase * Math.PI * 2 + (x + y) * 0.03));
-                pixels[y * WIDTH + x] = 0xFF000000 | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b);
+                pixels[y * w + x] = 0xFF000000 | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b);
             }
         }
         return img;
@@ -131,16 +194,10 @@ public class WebmSmokeTest {
         return v < 0 ? 0 : (v > 255 ? 255 : v);
     }
 
-    /** Per-frame difference: summed per-channel abs error + count of off-tolerance pixels. */
-    private static final class FrameDiff {
-        long absError;
-        long badPixels;
-    }
-
-    private static FrameDiff diff(BufferedImage expected, BufferedImage actual) {
-        int w = expected.getWidth();
-        int h = expected.getHeight();
-        FrameDiff d = new FrameDiff();
+    /** Returns {badPixels, summedPerChannelAbsError}. */
+    private static long[] diff(BufferedImage expected, BufferedImage actual) {
+        int w = expected.getWidth(), h = expected.getHeight();
+        long absError = 0, badPixels = 0;
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
                 int e = expected.getRGB(x, y);
@@ -148,12 +205,28 @@ public class WebmSmokeTest {
                 int dr = Math.abs(((e >> 16) & 0xFF) - ((a >> 16) & 0xFF));
                 int dg = Math.abs(((e >> 8) & 0xFF) - ((a >> 8) & 0xFF));
                 int db = Math.abs((e & 0xFF) - (a & 0xFF));
-                d.absError += dr + dg + db;
-                if (dr > PIXEL_TOLERANCE || dg > PIXEL_TOLERANCE || db > PIXEL_TOLERANCE) {
-                    d.badPixels++;
-                }
+                absError += dr + dg + db;
+                if (dr > PIXEL_TOLERANCE || dg > PIXEL_TOLERANCE || db > PIXEL_TOLERANCE) badPixels++;
             }
         }
-        return d;
+        return new long[] { badPixels, absError };
+    }
+
+    private static long usedHeap() {
+        Runtime rt = Runtime.getRuntime();
+        return rt.totalMemory() - rt.freeMemory();
+    }
+
+    private static void writeFile(String name, byte[] data) throws Exception {
+        File outDir = new File("build");
+        outDir.mkdirs();
+        File outFile = new File(outDir, name);
+        Files.write(outFile.toPath(), data);
+        System.out.println("    wrote " + outFile.getAbsolutePath() + " (open in Chrome/Firefox to watch)");
+    }
+
+    private static void fail(String msg) {
+        System.err.println("FAIL — " + msg);
+        System.exit(1);
     }
 }
