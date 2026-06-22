@@ -21,6 +21,36 @@ val jdkLauncher = javaToolchains.launcherFor {
 }
 val gradleJavaHome = jdkLauncher.map { it.metadata.installationPath.asFile.absolutePath }
 
+// ── WebM (VP9) via vcpkg ──────────────────────────────────────────
+// On by default; -Pwebm=false builds WebP-only (no vcpkg needed). Default-on
+// with no vcpkg falls back to WebP-only (warning); explicit -Pwebm=true errors.
+val webmRequested = project.findProperty("webm") as String?   // null = unspecified (default on)
+val webmEnabled = webmRequested?.toBoolean() ?: true
+val vcpkgRoot: String? = System.getenv("VCPKG_ROOT")
+    ?: System.getenv("VCPKG_INSTALLATION_ROOT")
+    ?: rootProject.file("vcpkg").takeIf { it.isDirectory }?.absolutePath
+
+/** vcpkg/CMake flags for one triplet (PIC linux triplets live in vcpkg-triplets/). Called at execution time. */
+fun webmCmakeArgs(triplet: String): List<String> {
+    if (!webmEnabled) return listOf("-DWEBM_ENABLED=OFF")
+    val root = vcpkgRoot
+    if (root == null) {
+        if (webmRequested != null) throw GradleException(
+            "WebM requested (-Pwebm=$webmRequested) but no vcpkg root was found. " +
+            "Set VCPKG_ROOT, add a vcpkg/ checkout, or drop the flag.")
+        logger.warn("[webp-natives] vcpkg not found — building WebP only. " +
+            "Set VCPKG_ROOT (or add a vcpkg/ checkout) to enable the VP9/WebM stack.")
+        return listOf("-DWEBM_ENABLED=OFF")
+    }
+    return listOf(
+        "-DWEBM_ENABLED=ON",
+        "-DCMAKE_TOOLCHAIN_FILE=$root/scripts/buildsystems/vcpkg.cmake",
+        "-DVCPKG_TARGET_TRIPLET=$triplet",
+        "-DVCPKG_MANIFEST_DIR=${rootProject.projectDir.absolutePath}",
+        "-DVCPKG_OVERLAY_TRIPLETS=${rootProject.file("vcpkg-triplets").absolutePath}"
+    )
+}
+
 /**
  * Register cmake configure + build + copy-.so tasks for one architecture.
  *
@@ -35,18 +65,21 @@ fun registerLinuxArchBuild(arch: String, cmakeFlags: List<String> = emptyList())
 
     val configure = tasks.register<Exec>("cmakeConfigureLinux$suffix") {
         onlyIf { isLinux }
+        // Build the command in doFirst so vcpkg-root resolution only runs when
+        // this task executes on Linux, never at configuration time elsewhere.
         doFirst {
             environment("JAVA_HOME", gradleJavaHome.get())
+            val args = mutableListOf(
+                "cmake",
+                "-S", nativeLinuxDir.asFile.absolutePath,
+                "-B", buildDirForArch.get().asFile.absolutePath,
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DWEBP_JNI_SOURCE=${sharedJniSource.absolutePath}"
+            )
+            args.addAll(webmCmakeArgs("$arch-linux"))
+            args.addAll(cmakeFlags)
+            commandLine(args)
         }
-        val args = mutableListOf(
-            "cmake",
-            "-S", nativeLinuxDir.asFile.absolutePath,
-            "-B", buildDirForArch.get().asFile.absolutePath,
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DWEBP_JNI_SOURCE=${sharedJniSource.absolutePath}"
-        )
-        args.addAll(cmakeFlags)
-        commandLine(args)
     }
 
     val build = tasks.register<Exec>("cmakeBuildLinux$suffix") {

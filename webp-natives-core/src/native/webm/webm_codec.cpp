@@ -1,6 +1,7 @@
 #include "webm_codec.h"
 
 #include <cstring>
+#include <utility>
 #include <mkvmuxer/mkvmuxer.h>
 #include <mkvparser/mkvparser.h>
 #include <vpx/vp8cx.h>
@@ -45,49 +46,9 @@ private:
     mkvmuxer::int64 pos_ = 0;
 };
 
-static void argb_to_i420(const uint32_t* argb, int width, int height,
-                         uint8_t* y, uint8_t* u, uint8_t* v) {
-    for (int j = 0; j < height; ++j) {
-        for (int i = 0; i < width; ++i) {
-            const uint32_t p = argb[j * width + i];
-            const int b = p & 0xFF;
-            const int g = (p >> 8) & 0xFF;
-            const int r = (p >> 16) & 0xFF;
-            const int y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y[j * width + i] = static_cast<uint8_t>(y_val < 0 ? 0 : (y_val > 255 ? 255 : y_val));
-            if ((j & 1) == 0 && (i & 1) == 0) {
-                const int u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                const int v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                const int uv_idx = (j / 2) * (width / 2) + (i / 2);
-                u[uv_idx] = static_cast<uint8_t>(u_val < 0 ? 0 : (u_val > 255 ? 255 : u_val));
-                v[uv_idx] = static_cast<uint8_t>(v_val < 0 ? 0 : (v_val > 255 ? 255 : v_val));
-            }
-        }
-    }
-}
-
-static void i420_to_argb(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                         int y_stride, int uv_stride, int width, int height, uint32_t* argb) {
-    for (int j = 0; j < height; ++j) {
-        for (int i = 0; i < width; ++i) {
-            const int y_val = y[j * y_stride + i];
-            const int uv_idx = (j / 2) * uv_stride + (i / 2);
-            const int u_val = u[uv_idx] - 128;
-            const int v_val = v[uv_idx] - 128;
-            int r = y_val + ((91881 * v_val) >> 16);
-            int g = y_val - ((22554 * u_val + 46802 * v_val) >> 16);
-            int b = y_val + ((116130 * u_val) >> 16);
-            r = r < 0 ? 0 : (r > 255 ? 255 : r);
-            g = g < 0 ? 0 : (g > 255 ? 255 : g);
-            b = b < 0 ? 0 : (b > 255 ? 255 : b);
-            argb[j * width + i] = 0xFF000000u | (static_cast<uint32_t>(r) << 16)
-                | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
-        }
-    }
-}
-
-}  // namespace
-
+// Reads from an in-memory WebM buffer for the parser. Lives in the anonymous
+// namespace; the Decoder holds it via an IMkvReader* and deletes the concrete
+// type in its destructor (IMkvReader's own destructor is protected).
 class MemoryReader : public mkvparser::IMkvReader {
 public:
     MemoryReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
@@ -110,6 +71,49 @@ private:
     const uint8_t* data_;
     size_t size_;
 };
+
+void argb_to_i420(const uint32_t* argb, int width, int height,
+                  uint8_t* y, uint8_t* u, uint8_t* v) {
+    for (int j = 0; j < height; ++j) {
+        for (int i = 0; i < width; ++i) {
+            const uint32_t p = argb[j * width + i];
+            const int b = p & 0xFF;
+            const int g = (p >> 8) & 0xFF;
+            const int r = (p >> 16) & 0xFF;
+            const int y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+            y[j * width + i] = static_cast<uint8_t>(y_val < 0 ? 0 : (y_val > 255 ? 255 : y_val));
+            if ((j & 1) == 0 && (i & 1) == 0) {
+                const int u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                const int v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                const int uv_idx = (j / 2) * (width / 2) + (i / 2);
+                u[uv_idx] = static_cast<uint8_t>(u_val < 0 ? 0 : (u_val > 255 ? 255 : u_val));
+                v[uv_idx] = static_cast<uint8_t>(v_val < 0 ? 0 : (v_val > 255 ? 255 : v_val));
+            }
+        }
+    }
+}
+
+void i420_to_argb(const uint8_t* y, const uint8_t* u, const uint8_t* v,
+                  int y_stride, int uv_stride, int width, int height, uint32_t* argb) {
+    for (int j = 0; j < height; ++j) {
+        for (int i = 0; i < width; ++i) {
+            const int y_val = y[j * y_stride + i];
+            const int uv_idx = (j / 2) * uv_stride + (i / 2);
+            const int u_val = u[uv_idx] - 128;
+            const int v_val = v[uv_idx] - 128;
+            int r = y_val + ((91881 * v_val) >> 16);
+            int g = y_val - ((22554 * u_val + 46802 * v_val) >> 16);
+            int b = y_val + ((116130 * u_val) >> 16);
+            r = r < 0 ? 0 : (r > 255 ? 255 : r);
+            g = g < 0 ? 0 : (g > 255 ? 255 : g);
+            b = b < 0 ? 0 : (b > 255 ? 255 : b);
+            argb[j * width + i] = 0xFF000000u | (static_cast<uint32_t>(r) << 16)
+                | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+        }
+    }
+}
+
+}  // namespace
 
 namespace webm_codec {
 
@@ -217,7 +221,7 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
         total_duration_ms += durations_ms[fi];
     }
 
-    info->set_duration(static_cast<double>(total_duration_ms) / 1000.0);
+    info->set_duration(static_cast<double>(total_duration_ms));
 
     if (!segment.Finalize()) {
         vpx_codec_destroy(&codec);
@@ -229,118 +233,188 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
     return !out.empty();
 }
 
-bool decode_vp9(const uint8_t* data, size_t size,
-                std::vector<WebMFrame>& out_frames,
-                WebMInfo& out_info) {
-    out_frames.clear();
-    if (data == nullptr || size == 0) return false;
+// ─────────────────────────────────────────────────────────────────
+//  Streaming decoder
+// ─────────────────────────────────────────────────────────────────
 
-    MemoryReader reader(data, size);
+Decoder* Decoder::open(const uint8_t* data, size_t size) {
+    if (data == nullptr || size == 0) return nullptr;
+    auto* d = new Decoder();
+    if (!d->init(data, size)) {
+        delete d;
+        return nullptr;
+    }
+    return d;
+}
+
+Decoder::~Decoder() {
+    if (codec_inited_) vpx_codec_destroy(&codec_);
+    delete segment_;
+    // reader_ is an IMkvReader* whose destructor is protected; delete via the
+    // concrete type (its compiler-generated destructor is accessible).
+    delete static_cast<MemoryReader*>(reader_);
+}
+
+bool Decoder::init(const uint8_t* data, size_t size) {
+    buffer_.assign(data, data + size);
+    reader_ = new MemoryReader(buffer_.data(), buffer_.size());
+
     mkvparser::EBMLHeader header;
     long long ebml_pos = 0;
-    if (header.Parse(&reader, ebml_pos) < 0) return false;
+    if (header.Parse(reader_, ebml_pos) < 0) return false;
 
     long long pos = 0;
-    mkvparser::Segment* segment = nullptr;
-    if (mkvparser::Segment::CreateInstance(&reader, pos, segment) < 0 || segment == nullptr) {
+    if (mkvparser::Segment::CreateInstance(reader_, pos, segment_) < 0 || segment_ == nullptr) {
         return false;
     }
-    if (segment->Load() < 0) {
-        delete segment;
-        return false;
-    }
+    if (segment_->Load() < 0) return false;
 
-    const mkvparser::Tracks* tracks = segment->GetTracks();
-    if (tracks == nullptr) {
-        delete segment;
-        return false;
-    }
+    const mkvparser::Tracks* tracks = segment_->GetTracks();
+    if (tracks == nullptr) return false;
 
-    long video_track = -1;
     int width = 0;
     int height = 0;
     for (unsigned long i = 0; i < tracks->GetTracksCount(); ++i) {
         const mkvparser::Track* track = tracks->GetTrackByIndex(i);
         if (track != nullptr && track->GetType() == mkvparser::Track::kVideo) {
             const auto* video = static_cast<const mkvparser::VideoTrack*>(track);
-            video_track = track->GetNumber();
+            video_track_ = track->GetNumber();
             width = static_cast<int>(video->GetWidth());
             height = static_cast<int>(video->GetHeight());
             break;
         }
     }
-    if (video_track < 0 || width <= 0 || height <= 0) {
-        delete segment;
+    if (video_track_ < 0 || width <= 0 || height <= 0) return false;
+
+    if (vpx_codec_dec_init(&codec_, vpx_codec_vp9_dx(), nullptr, 0) != VPX_CODEC_OK) {
         return false;
     }
+    codec_inited_ = true;
 
-    vpx_codec_ctx_t codec;
-    if (vpx_codec_dec_init(&codec, vpx_codec_vp9_dx(), nullptr, 0) != VPX_CODEC_OK) {
-        delete segment;
-        return false;
-    }
+    info_.width = width;
+    info_.height = height;
+    scan_timestamps();  // header-only: frame_count + per-frame timestamps + duration
 
-    const mkvparser::Cluster* cluster = segment->GetFirst();
-    int prev_ts_ms = -1;
+    // Position the decode cursor at the first cluster, then prime one frame.
+    cluster_ = segment_->GetFirst();
+    entry_ = nullptr;
+    frame_in_block_ = 0;
+    cursor_done_ = (cluster_ == nullptr || cluster_->EOS());
 
+    fill_pending();
+    return true;
+}
+
+void Decoder::scan_timestamps() {
+    frame_ts_ms_.clear();
+    const mkvparser::Cluster* cluster = segment_->GetFirst();
     while (cluster != nullptr && !cluster->EOS()) {
         const mkvparser::BlockEntry* entry = nullptr;
         long status = cluster->GetFirst(entry);
         while (status == 0 && entry != nullptr && !entry->EOS()) {
             const mkvparser::Block* block = entry->GetBlock();
-            if (block != nullptr && block->GetTrackNumber() == video_track) {
-                const int frame_count = block->GetFrameCount();
-                for (int f = 0; f < frame_count; ++f) {
-                    const mkvparser::Block::Frame& frame = block->GetFrame(f);
-                    std::vector<uint8_t> frame_data(static_cast<size_t>(frame.len));
-                    if (frame.Read(segment->m_pReader, frame_data.data()) != 0) continue;
-
-                    if (vpx_codec_decode(&codec, frame_data.data(), frame_data.size(), nullptr, 0) != VPX_CODEC_OK) {
-                        continue;
-                    }
-
-                    vpx_codec_iter_t iter = nullptr;
-                    vpx_image_t* img;
-                    while ((img = vpx_codec_get_frame(&codec, &iter)) != nullptr) {
-                        if (img->fmt != VPX_IMG_FMT_I420) continue;
-
-                        WebMFrame out_frame;
-                        out_frame.width = static_cast<int>(img->d_w);
-                        out_frame.height = static_cast<int>(img->d_h);
-                        out_frame.argb.resize(static_cast<size_t>(img->d_w) * img->d_h * 4);
-
-                        const int ts_ms = static_cast<int>(block->GetTime(cluster) / 1000000LL);
-                        out_frame.timestamp_ms = ts_ms;
-                        out_frame.duration_ms = (prev_ts_ms < 0) ? 50 : (ts_ms - prev_ts_ms);
-                        prev_ts_ms = ts_ms;
-
-                        i420_to_argb(img->planes[VPX_PLANE_Y], img->planes[VPX_PLANE_U], img->planes[VPX_PLANE_V],
-                                     img->stride[VPX_PLANE_Y], img->stride[VPX_PLANE_U],
-                                     static_cast<int>(img->d_w), static_cast<int>(img->d_h),
-                                     reinterpret_cast<uint32_t*>(out_frame.argb.data()));
-                        out_frames.push_back(std::move(out_frame));
-                    }
-                }
+            if (block != nullptr && block->GetTrackNumber() == video_track_) {
+                const int fc = block->GetFrameCount();
+                const int ts = static_cast<int>(block->GetTime(cluster) / 1000000LL);
+                for (int f = 0; f < fc; ++f) frame_ts_ms_.push_back(ts);
             }
-
             const mkvparser::BlockEntry* next = nullptr;
             status = cluster->GetNext(entry, next);
             entry = next;
         }
+        cluster = segment_->GetNext(cluster);
+    }
+    info_.frame_count = static_cast<int>(frame_ts_ms_.size());
+    if (!frame_ts_ms_.empty()) {
+        const int last = info_.frame_count - 1;
+        info_.duration_ms = frame_ts_ms_[last] + frame_duration_ms(last);
+    } else {
+        info_.duration_ms = 0;
+    }
+}
 
-        cluster = segment->GetNext(cluster);
+int Decoder::frame_duration_ms(int index) const {
+    const int n = static_cast<int>(frame_ts_ms_.size());
+    if (index < 0 || index >= n) return 0;
+    if (index + 1 < n) return frame_ts_ms_[index + 1] - frame_ts_ms_[index];
+    if (n >= 2) return frame_ts_ms_[n - 1] - frame_ts_ms_[n - 2];  // last frame: reuse prior interval
+    return 0;
+}
+
+bool Decoder::read_next_coded_frame(std::vector<uint8_t>& buf) {
+    while (cluster_ != nullptr && !cluster_->EOS()) {
+        if (entry_ == nullptr) {
+            long status = cluster_->GetFirst(entry_);
+            if (status < 0 || entry_ == nullptr) {
+                cluster_ = segment_->GetNext(cluster_);
+                frame_in_block_ = 0;
+                continue;
+            }
+        }
+        while (entry_ != nullptr && !entry_->EOS()) {
+            const mkvparser::Block* block = entry_->GetBlock();
+            if (block != nullptr && block->GetTrackNumber() == video_track_
+                && frame_in_block_ < block->GetFrameCount()) {
+                const mkvparser::Block::Frame& frame = block->GetFrame(frame_in_block_++);
+                buf.resize(static_cast<size_t>(frame.len));
+                if (frame.Read(reader_, buf.data()) != 0) buf.clear();
+                return true;
+            }
+            // advance to the next block entry
+            frame_in_block_ = 0;
+            const mkvparser::BlockEntry* next = nullptr;
+            long status = cluster_->GetNext(entry_, next);
+            entry_ = (status == 0) ? next : nullptr;
+        }
+        // exhausted this cluster
+        cluster_ = segment_->GetNext(cluster_);
+        entry_ = nullptr;
+        frame_in_block_ = 0;
+    }
+    return false;
+}
+
+void Decoder::decode_one_packet() {
+    std::vector<uint8_t> buf;
+    if (!read_next_coded_frame(buf)) {
+        cursor_done_ = true;
+        return;
+    }
+    if (buf.empty()) return;  // read failure on this packet — skip, keep going
+    if (vpx_codec_decode(&codec_, buf.data(), static_cast<unsigned int>(buf.size()),
+                         nullptr, 0) != VPX_CODEC_OK) {
+        return;
     }
 
-    vpx_codec_destroy(&codec);
-    delete segment;
+    vpx_codec_iter_t iter = nullptr;
+    vpx_image_t* img;
+    while ((img = vpx_codec_get_frame(&codec_, &iter)) != nullptr) {
+        if (img->fmt != VPX_IMG_FMT_I420) continue;
+        WebMFrame fr;
+        fr.width = static_cast<int>(img->d_w);
+        fr.height = static_cast<int>(img->d_h);
+        fr.argb.resize(static_cast<size_t>(img->d_w) * img->d_h * 4);
+        i420_to_argb(img->planes[VPX_PLANE_Y], img->planes[VPX_PLANE_U], img->planes[VPX_PLANE_V],
+                     img->stride[VPX_PLANE_Y], img->stride[VPX_PLANE_U],
+                     fr.width, fr.height, reinterpret_cast<uint32_t*>(fr.argb.data()));
+        pending_.push_back(std::move(fr));
+    }
+}
 
-    if (out_frames.empty()) return false;
+void Decoder::fill_pending() {
+    while (pending_.empty() && !cursor_done_) decode_one_packet();
+}
 
-    out_info.width = width;
-    out_info.height = height;
-    out_info.frame_count = static_cast<int>(out_frames.size());
-    out_info.duration_ms = out_frames.back().timestamp_ms
-        + (out_frames.back().duration_ms > 0 ? out_frames.back().duration_ms : 50);
+bool Decoder::next(WebMFrame& out) {
+    if (pending_.empty()) return false;
+    out = std::move(pending_.front());
+    pending_.pop_front();
+    if (out_index_ < static_cast<int>(frame_ts_ms_.size())) {
+        out.timestamp_ms = frame_ts_ms_[out_index_];
+        out.duration_ms = frame_duration_ms(out_index_);
+    }
+    ++out_index_;
+    fill_pending();  // keep one frame buffered so has_more() stays accurate
     return true;
 }
 

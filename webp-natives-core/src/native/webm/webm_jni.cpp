@@ -6,12 +6,6 @@
 
 namespace {
 
-struct DecodeHandle {
-    std::vector<webm_codec::WebMFrame> frames;
-    size_t index = 0;
-    webm_codec::WebMInfo info{};
-};
-
 std::vector<uint32_t> jni_argb_frame(JNIEnv* env, jintArray arr, int width, int height) {
     const jsize needed = static_cast<jsize>(width * height);
     if (env->GetArrayLength(arr) < needed) return {};
@@ -86,31 +80,27 @@ Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyt
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
     if (bytes == nullptr) return 0;
 
-    auto* handle = new DecodeHandle();
-    const bool ok = webm_codec::decode_vp9(reinterpret_cast<const uint8_t*>(bytes),
-                                            static_cast<size_t>(len),
-                                            handle->frames, handle->info);
+    webm_codec::Decoder* decoder = webm_codec::Decoder::open(
+        reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len));
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
-    if (!ok || handle->frames.empty()) {
-        delete handle;
-        return 0;
-    }
-    return reinterpret_cast<jlong>(handle);
+    if (decoder == nullptr) return 0;
+    return reinterpret_cast<jlong>(decoder);
 }
 
 JNIEXPORT jintArray JNICALL
 Java_gg_norisk_webm_internal_WebMNative_decodeGetInfo(JNIEnv* env, jclass cls, jlong handlePtr) {
     (void) cls;
     if (handlePtr == 0) return nullptr;
-    auto* handle = reinterpret_cast<DecodeHandle*>(handlePtr);
+    auto* decoder = reinterpret_cast<webm_codec::Decoder*>(handlePtr);
+    const webm_codec::WebMInfo& info = decoder->info();
     jintArray arr = env->NewIntArray(4);
     if (arr == nullptr) return nullptr;
     jint vals[4] = {
-        handle->info.width,
-        handle->info.height,
-        handle->info.frame_count,
-        handle->info.duration_ms,
+        info.width,
+        info.height,
+        info.frame_count,
+        info.duration_ms,
     };
     env->SetIntArrayRegion(arr, 0, 4, vals);
     return arr;
@@ -121,18 +111,19 @@ Java_gg_norisk_webm_internal_WebMNative_decodeHasMoreFrames(JNIEnv* env, jclass 
     (void) env;
     (void) cls;
     if (handlePtr == 0) return JNI_FALSE;
-    auto* handle = reinterpret_cast<DecodeHandle*>(handlePtr);
-    return handle->index < handle->frames.size() ? JNI_TRUE : JNI_FALSE;
+    auto* decoder = reinterpret_cast<webm_codec::Decoder*>(handlePtr);
+    return decoder->has_more() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jintArray JNICALL
 Java_gg_norisk_webm_internal_WebMNative_decodeNextFrame(JNIEnv* env, jclass cls, jlong handlePtr) {
     (void) cls;
     if (handlePtr == 0) return nullptr;
-    auto* handle = reinterpret_cast<DecodeHandle*>(handlePtr);
-    if (handle->index >= handle->frames.size()) return nullptr;
+    auto* decoder = reinterpret_cast<webm_codec::Decoder*>(handlePtr);
 
-    const webm_codec::WebMFrame& frame = handle->frames[handle->index++];
+    webm_codec::WebMFrame frame;
+    if (!decoder->next(frame)) return nullptr;  // stream drained
+
     const jsize pixelCount = static_cast<jsize>(frame.width * frame.height);
     jintArray pixels = env->NewIntArray(pixelCount + 2);
     if (pixels == nullptr) return nullptr;
@@ -149,7 +140,7 @@ Java_gg_norisk_webm_internal_WebMNative_decodeClose(JNIEnv* env, jclass cls, jlo
     (void) env;
     (void) cls;
     if (handlePtr == 0) return;
-    delete reinterpret_cast<DecodeHandle*>(handlePtr);
+    delete reinterpret_cast<webm_codec::Decoder*>(handlePtr);
 }
 
 }  // extern "C"

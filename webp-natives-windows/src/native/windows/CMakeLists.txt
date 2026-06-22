@@ -14,26 +14,28 @@ if (NOT DEFINED WEBP_JNI_SOURCE)
     message(FATAL_ERROR "WEBP_JNI_SOURCE must be set via -DWEBP_JNI_SOURCE=<path>")
 endif()
 
+# VP9/WebM stack is on by default; -DWEBM_ENABLED=OFF builds WebP only.
+option(WEBM_ENABLED "Build the VP9/WebM encode+decode stack (needs vcpkg/libvpx)" ON)
+
 set(WEBP_CORE_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../../../../webp-natives-core/src/native")
 set(WEBP_NATIVE_SOURCES "${WEBP_JNI_SOURCE}")
-
-
-set(WEBM_ENABLED FALSE)
-if (WIN32)
-    include("${CMAKE_CURRENT_LIST_DIR}/../../../../cmake/WebmDeps.cmake")
-    list(APPEND WEBP_NATIVE_SOURCES
-        "${WEBP_CORE_NATIVE}/webm/webm_codec.cpp"
-        "${WEBP_CORE_NATIVE}/webm/webm_jni.cpp"
-    )
-    set(WEBM_ENABLED TRUE)
-endif()
 
 # Statically link the MSVC C++ runtime (/MT) so the DLL doesn't depend on
 # msvcp140 / vcruntime140 being present on the user's machine. (Pattern
 # borrowed from endlesssource/mediainterface — without this the DLL
 # crashed with EXCEPTION_ACCESS_VIOLATION on certain runtime mismatches.)
+# Set before any add_library() so webm_static (built in WebmDeps) inherits it.
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "" FORCE)
+
+# WebM (VP9) deps + sources — libvpx via vcpkg, libwebm via FetchContent.
+if (WEBM_ENABLED)
+    include("${CMAKE_CURRENT_LIST_DIR}/../../../../cmake/WebmDeps.cmake")
+    list(APPEND WEBP_NATIVE_SOURCES
+        "${WEBP_CORE_NATIVE}/webm/webm_codec.cpp"
+        "${WEBP_CORE_NATIVE}/webm/webm_jni.cpp"
+    )
+endif()
 
 # ─────────────────────────────────────────────────────────────────
 #  libwebp dependency — built from source via FetchContent.
@@ -81,10 +83,6 @@ target_include_directories(webp_natives PRIVATE
 
 target_link_libraries(webp_natives PRIVATE webp webpdemux)
 if (WEBM_ENABLED)
-    target_include_directories(webp_natives PRIVATE
-        "${CMAKE_BINARY_DIR}/_deps/libwebm-src"
-        "${CMAKE_BINARY_DIR}/_deps/libvpx-src"
-    )
     target_link_libraries(webp_natives PRIVATE webm_static webm_vpx)
 endif()
 

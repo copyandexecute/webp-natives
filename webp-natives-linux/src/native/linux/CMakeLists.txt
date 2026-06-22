@@ -14,11 +14,11 @@ if (NOT DEFINED WEBP_JNI_SOURCE)
     message(FATAL_ERROR "WEBP_JNI_SOURCE must be set via -DWEBP_JNI_SOURCE=<path>")
 endif()
 
+# VP9/WebM stack is on by default; -DWEBM_ENABLED=OFF builds WebP only.
+option(WEBM_ENABLED "Build the VP9/WebM encode+decode stack (needs vcpkg/libvpx)" ON)
+
 set(WEBP_CORE_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../../../../webp-natives-core/src/native")
-set(WEBP_NATIVE_SOURCES
-    "${WEBP_JNI_SOURCE}"
-    "${WEBP_CORE_NATIVE}/webm/webm_jni_stub.c"
-)
+set(WEBP_NATIVE_SOURCES "${WEBP_JNI_SOURCE}")
 
 # Position-Independent Code is mandatory for .so on Linux.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -26,6 +26,15 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Default to Release if not specified — affects libwebp's own optimizations too.
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# WebM (VP9) deps + sources — libvpx via vcpkg, libwebm via FetchContent.
+if (WEBM_ENABLED)
+    include("${CMAKE_CURRENT_LIST_DIR}/../../../../cmake/WebmDeps.cmake")
+    list(APPEND WEBP_NATIVE_SOURCES
+        "${WEBP_CORE_NATIVE}/webm/webm_codec.cpp"
+        "${WEBP_CORE_NATIVE}/webm/webm_jni.cpp"
+    )
 endif()
 
 # ─────────────────────────────────────────────────────────────────
@@ -63,7 +72,7 @@ FetchContent_MakeAvailable(libwebp)
 # ─────────────────────────────────────────────────────────────────
 add_library(webp_natives SHARED ${WEBP_NATIVE_SOURCES})
 
-target_compile_features(webp_natives PRIVATE c_std_11)
+target_compile_features(webp_natives PRIVATE c_std_11 cxx_std_11)
 target_compile_options(webp_natives PRIVATE -fvisibility=hidden -O3)
 
 target_include_directories(webp_natives PRIVATE
@@ -72,6 +81,9 @@ target_include_directories(webp_natives PRIVATE
 )
 
 target_link_libraries(webp_natives PRIVATE webp webpdemux)
+if (WEBM_ENABLED)
+    target_link_libraries(webp_natives PRIVATE webm_static webm_vpx)
+endif()
 
 # Strip unneeded symbols to keep the .so small (saves ~30% on stripped builds).
 set_target_properties(webp_natives PROPERTIES

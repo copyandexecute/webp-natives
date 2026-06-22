@@ -12,5 +12,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 
-# Local libvpx build tooling — not vendored in git
-tools/nasm/
+# vcpkg manifest install tree (libvpx) — created under each module's CMake
+# binary dir, regenerated from vcpkg.json on configure.
+vcpkg_installed/

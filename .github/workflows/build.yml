@@ -30,6 +30,11 @@ jobs:
   build-native:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
+    env:
+      # libvpx (the VP9/WebM dep) is built via the runner's preinstalled
+      # vcpkg in manifest mode. Cache built packages in the GitHub Actions
+      # cache so it's compiled once per (OS, arch) instead of every run.
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +68,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Expose the GitHub Actions cache endpoint to vcpkg's x-gha binary
+      # source so libvpx packages persist across runs. (vcpkg reads these
+      # two env vars; they aren't propagated to job env automatically.)
+      - name: Enable vcpkg GitHub Actions cache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       # processResources triggers the platform's CMake task chain via the
       # dependsOn(copyXxx) wiring in each module's build.gradle.kts. On
       # macOS we have two jobs on the same arm64 runner — one builds the
@@ -86,6 +101,14 @@ jobs:
       - name: Smoke-test
         if: ${{ !contains(matrix.label, 'macos / x64') }}
         run: ./gradlew :smoke-test:run --no-daemon
+        shell: bash
+
+      # VP9/WebM end-to-end (encode → .webm → streaming decode → fidelity).
+      # Skipped on the macos/x64 cross job for the same reason as the WebP
+      # smoke-test: the binary targets x86_64 but the runner is arm64.
+      - name: WebM smoke-test
+        if: ${{ !contains(matrix.label, 'macos / x64') }}
+        run: ./gradlew :smoke-test:runWebm --no-daemon
         shell: bash
 
       - name: Verify native artifact exists

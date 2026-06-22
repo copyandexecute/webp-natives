@@ -22,7 +22,7 @@ public final class WebMDecoder implements AutoCloseable {
         }
         long h = WebMNative.decodeOpen(data);
         if (h == 0L) {
-            throw new WebMException("Failed to open WebM (invalid stream or VP9 not supported on this platform)");
+            throw new WebMException("Failed to open WebM (not a valid VP9/WebM stream)");
         }
         int[] raw = WebMNative.decodeGetInfo(h);
         if (raw == null || raw.length < 4) {

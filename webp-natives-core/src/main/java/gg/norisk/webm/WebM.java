@@ -5,7 +5,6 @@ import gg.norisk.webm.internal.WebMNative;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
-import java.util.Locale;
 
 public final class WebM {
 
@@ -19,15 +18,19 @@ public final class WebM {
         return NativeLoader.tryLoad();
     }
 
+    /**
+     * @return {@code true} if the VP9/WebM native is available for this OS/arch.
+     *         The codec is built for every platform; this only returns false if
+     *         the native library failed to load.
+     */
     public static boolean isSupported() {
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        return os.contains("win") && NativeLoader.tryLoad();
+        return NativeLoader.tryLoad();
     }
 
     public static byte[] encode(BufferedImage[] frames, int[] durationsMs,
                                 int cpuUsed, int bitrateKbps) throws WebMException {
         if (!isSupported()) {
-            throw new WebMException("WebM VP9 encode is not supported on this platform");
+            throw new WebMException("WebM native library is not available for this OS/arch");
         }
         if (frames == null || frames.length == 0) {
             throw new WebMException("frames are null or empty");
@@ -63,6 +66,9 @@ public final class WebM {
     }
 
     public static WebMDecoder decode(byte[] data) throws WebMException {
+        if (!isSupported()) {
+            throw new WebMException("WebM native library is not available for this OS/arch");
+        }
         return WebMDecoder.open(data);
     }
 }

@@ -17,14 +17,21 @@ public class WebmSmokeTest {
     private static final int FPS = 20;
     private static final int FRAME_MS = 1_000 / FPS;
     private static final int FRAME_COUNT = DURATION_MS / FRAME_MS;
-    /** Allow some loss from VP9 lossy encode */
-    private static final int MAX_MISMATCH_RATIO = 500; // per frame, ~0.8% of pixels
+
+    // VP9 is lossy and round-trips through I420, so an exact match is impossible.
+    // We assert on perceptual closeness instead: a pixel is "bad" only if a
+    // channel drifts past PIXEL_TOLERANCE, and we cap both the bad-pixel ratio
+    // and the mean per-channel error. Gross corruption (wrong colours, frame
+    // shear, decode failure) blows past these; honest lossy noise stays under.
+    private static final int PIXEL_TOLERANCE = 24;        // per-channel |Δ| for a pixel to count as bad
+    private static final double MAX_BAD_PIXEL_RATIO = 0.10;
+    private static final double MAX_MEAN_ABS_ERROR = 12.0; // per channel, across the whole clip
 
     public static void main(String[] args) throws Exception {
         System.out.println("[1] Load native: " + WebM.loadNativeLibrary());
         System.out.println("[1] WebM supported: " + WebM.isSupported());
         if (!WebM.isSupported()) {
-            System.err.println("SKIP — WebM VP9 encode is Windows-only for now");
+            System.err.println("SKIP — WebM native not available for this OS/arch");
             System.exit(0);
         }
 
@@ -51,6 +58,8 @@ public class WebmSmokeTest {
         System.out.println("[3] wrote preview file: " + outFile.getAbsolutePath());
         System.out.println("    → open in Chrome/Firefox to watch the video");
 
+        // Decoding is streaming: WebMDecoder pulls one frame per nextFrame()
+        // call, so this loop never holds the whole clip in memory at once.
         try (WebMDecoder decoder = WebM.decode(webm)) {
             WebMInfo info = decoder.info();
             System.out.println("[4] decoded info: " + info);
@@ -65,24 +74,37 @@ public class WebmSmokeTest {
             }
 
             int frameIdx = 0;
-            int totalMm = 0;
+            long totalBadPixels = 0;
+            long totalAbsError = 0;       // summed per-channel |Δ|
+            long totalChannels = 0;       // pixels * 3
             while (decoder.hasMoreFrames() && frameIdx < FRAME_COUNT) {
                 WebMFrame frame = decoder.nextFrame();
-                int mismatches = countMismatches(frames[frameIdx], frame.image());
-                totalMm += mismatches;
-                if (mismatches > MAX_MISMATCH_RATIO) {
-                    System.out.println("    frame " + frameIdx + ": " + mismatches + " pixel mismatches"
-                        + " (duration=" + frame.durationMs() + "ms, ts=" + frame.timestampMs() + "ms)");
-                }
+                FrameDiff d = diff(frames[frameIdx], frame.image());
+                totalBadPixels += d.badPixels;
+                totalAbsError += d.absError;
+                totalChannels += (long) WIDTH * HEIGHT * 3;
                 frameIdx++;
             }
 
+            double badRatio = totalChannels == 0 ? 1.0
+                : (double) totalBadPixels / ((double) totalChannels / 3.0);
+            double meanAbsError = totalChannels == 0 ? Double.MAX_VALUE
+                : (double) totalAbsError / (double) totalChannels;
+
             System.out.println("[5] frames decoded: " + frameIdx);
-            System.out.println("[5] total pixel mismatches: " + totalMm
-                + " (VP9 is lossy — small diffs are OK)");
+            System.out.printf("[5] fidelity: bad-pixel ratio=%.4f (max %.2f), mean abs err=%.3f/channel (max %.1f)%n",
+                badRatio, MAX_BAD_PIXEL_RATIO, meanAbsError, MAX_MEAN_ABS_ERROR);
 
             if (frameIdx < FRAME_COUNT - 2) {
                 System.err.println("FAIL — decoded too few frames");
+                System.exit(1);
+            }
+            if (badRatio > MAX_BAD_PIXEL_RATIO) {
+                System.err.println("FAIL — too many off-tolerance pixels: " + badRatio);
+                System.exit(1);
+            }
+            if (meanAbsError > MAX_MEAN_ABS_ERROR) {
+                System.err.println("FAIL — mean per-channel error too high: " + meanAbsError);
                 System.exit(1);
             }
         }
@@ -109,15 +131,29 @@ public class WebmSmokeTest {
         return v < 0 ? 0 : (v > 255 ? 255 : v);
     }
 
-    private static int countMismatches(BufferedImage expected, BufferedImage actual) {
+    /** Per-frame difference: summed per-channel abs error + count of off-tolerance pixels. */
+    private static final class FrameDiff {
+        long absError;
+        long badPixels;
+    }
+
+    private static FrameDiff diff(BufferedImage expected, BufferedImage actual) {
         int w = expected.getWidth();
         int h = expected.getHeight();
-        int mm = 0;
+        FrameDiff d = new FrameDiff();
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                if (expected.getRGB(x, y) != actual.getRGB(x, y)) mm++;
+                int e = expected.getRGB(x, y);
+                int a = actual.getRGB(x, y);
+                int dr = Math.abs(((e >> 16) & 0xFF) - ((a >> 16) & 0xFF));
+                int dg = Math.abs(((e >> 8) & 0xFF) - ((a >> 8) & 0xFF));
+                int db = Math.abs((e & 0xFF) - (a & 0xFF));
+                d.absError += dr + dg + db;
+                if (dr > PIXEL_TOLERANCE || dg > PIXEL_TOLERANCE || db > PIXEL_TOLERANCE) {
+                    d.badPixels++;
+                }
             }
         }
-        return mm;
+        return d;
     }
 }

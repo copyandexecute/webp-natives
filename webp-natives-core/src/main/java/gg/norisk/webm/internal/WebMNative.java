@@ -2,6 +2,7 @@ package gg.norisk.webm.internal;
 
 import gg.norisk.webp.internal.NativeLoader;
 import gg.norisk.webp.WebPException;
+import gg.norisk.webm.WebMException;
 
 public final class WebMNative {
 
@@ -9,7 +10,9 @@ public final class WebMNative {
         try {
             NativeLoader.load();
         } catch (WebPException e) {
-            throw new ExceptionInInitializerError(e);
+            // Surface as a WebM-domain failure rather than leaking WebPException.
+            throw new ExceptionInInitializerError(
+                new WebMException("Failed to load WebM native library", e));
         }
     }
 

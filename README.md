@@ -1,17 +1,24 @@
 # webp-natives
 
-WEBP encode/decode for the JVM. JNI wrapper around Google's
-[libwebp](https://chromium.googlesource.com/webm/libwebp) with a small,
-opinionated Java API. Bundles native binaries for win/linux/mac × x64+aarch64
-(work-in-progress: Linux and macOS modules need CI matrix builds).
+WEBP (still images) and VP9/WebM (video) encode/decode for the JVM. JNI
+wrappers around Google's [libwebp](https://chromium.googlesource.com/webm/libwebp),
+[libvpx](https://chromium.googlesource.com/webm/libvpx) and
+[libwebm](https://github.com/webmproject/libwebm), with a small, opinionated
+Java API (`gg.norisk.webp` + `gg.norisk.webm`). Bundles native binaries for
+win/linux/mac × x64+aarch64.
+
+The VP9/WebM stack builds on every platform: libvpx is pulled in via
+[vcpkg](https://vcpkg.io) (it handles NASM and the per-arch build), libwebm
+is compiled from a pinned source tag. Set `-Pwebm=false` for a WebP-only build
+that needs no vcpkg.
 
 ## Modules
 
 ```
-webp-natives-core      → public API + classpath native loader      (Java 8)
-webp-natives-windows   → JNI + win-x64 (+arm64) DLL, built via CMake
-webp-natives-linux     → TODO (CI matrix, ubuntu runner)
-webp-natives-macos     → TODO (CI matrix, macos runner, universal binary)
+webp-natives-core      → public API (webp + webm) + classpath native loader  (Java 8)
+webp-natives-windows   → JNI + win x64/arm64 DLL, built via CMake
+webp-natives-linux     → JNI + linux x64/arm64 .so (CI: ubuntu runners)
+webp-natives-macos     → JNI + macos x64/arm64 .dylib, per-arch (CI: macos runners)
 webp-natives-all       → aggregator artifact for consumers
 ```
 
@@ -117,17 +124,22 @@ See `benchmark/` for a runnable microbenchmark.
 
 ```
 ./gradlew publishToMavenLocal
-./gradlew :smoke-test:run     # correctness check
+./gradlew :smoke-test:run     # WebP correctness check
+./gradlew :smoke-test:runWebm # VP9/WebM encode→decode roundtrip + fidelity
 ./gradlew :benchmark:run      # latency + throughput tables
 ```
 
-The native DLL is rebuilt via CMake (using libwebp v1.6.0 fetched as a
-CMake `FetchContent` dependency) every time the windows module's
+The native library is rebuilt via CMake (libwebp v1.6.0 fetched as a
+`FetchContent` dependency) every time the matching platform module's
 `processResources` runs. Requires:
 
-- Windows host (the windows module's CMake task is `onlyIf isWindows`)
-- Visual Studio 2022 Build Tools (or VS Community)
+- A matching host OS (each platform module's CMake task is `onlyIf isWindows/isLinux/isMac`)
+- A C/C++ toolchain — Visual Studio 2022 Build Tools / Xcode / gcc
 - CMake 3.20+
+- **For WebM (default on):** a vcpkg checkout. The build finds it via
+  `$VCPKG_ROOT`, `$VCPKG_INSTALLATION_ROOT` (set on GitHub runners), or a
+  `vcpkg/` directory at the repo root. vcpkg fetches libvpx and the NASM
+  assembler itself — nothing else to install. Use `-Pwebm=false` to skip it.
 
 ## Design notes
 
@@ -144,6 +156,29 @@ CMake `FetchContent` dependency) every time the windows module's
 - **Multi-threaded decode/encode**: `WebPDecoderConfig.options.use_threads = 1`
   and `WebPConfig.thread_level = 1` enable libwebp's internal parallelism.
 
+## WebM / VP9 video
+
+```java
+import gg.norisk.webm.*;
+import java.awt.image.BufferedImage;
+
+// Encode a sequence of TYPE_INT_ARGB frames to a VP9/WebM byte[].
+BufferedImage[] frames = ...;
+int[] durationsMs = ...;            // one per frame
+byte[] webm = WebM.encodeFast(frames, durationsMs);
+
+// Decode — streaming, one frame at a time (never holds the whole clip).
+try (WebMDecoder decoder = WebM.decode(webm)) {
+    WebMInfo info = decoder.info();           // width/height/frameCount/durationMs
+    while (decoder.hasMoreFrames()) {
+        WebMFrame frame = decoder.nextFrame(); // frame.image(), durationMs(), timestampMs()
+    }
+}
+```
+
+`WebM.isSupported()` reports whether the native loaded for this OS/arch.
+
 ## License
 
-Apache 2.0. libwebp is BSD-3-Clause (Google). libsharpyuv is BSD-3-Clause.
+Apache 2.0. libwebp / libsharpyuv are BSD-3-Clause (Google). libvpx is
+BSD-3-Clause (WebM Project). libwebm is BSD-3-Clause (WebM Project).
