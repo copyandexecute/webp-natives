@@ -213,6 +213,14 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # The publish host is Linux, so :webp-natives-linux:processResources
+      # rebuilds the .so here (its Copy task is isLinux-gated and active) —
+      # and that now pulls in libvpx, which needs NASM. (Windows/macOS Copy
+      # tasks are no-ops here and use the downloaded artifacts instead.)
+      - name: Install NASM (libvpx dependency)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+        shell: bash
+
       # Stage prebuilt natives into src/main/resources so each module's
       # processResources picks them up on the ubuntu publish host.
       # (The platform Copy tasks themselves are isWindows/isLinux/isMac
