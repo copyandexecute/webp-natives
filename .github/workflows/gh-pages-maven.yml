@@ -91,6 +91,10 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Install NASM (libvpx dependency)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+        shell: bash
+
       - name: Build Linux x64 .so
         run: ./gradlew :webp-natives-linux:copyLinuxSoX64 --no-daemon
 
@@ -113,6 +117,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      - name: Install NASM (libvpx dependency)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+        shell: bash
 
       - name: Build Linux arm64 .so
         run: ./gradlew :webp-natives-linux:copyLinuxSoArm64 --no-daemon
@@ -145,6 +153,10 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Install NASM (libvpx dependency)
+        run: brew install nasm
+        shell: bash
+
       - name: Build macOS x86_64 dylib
         run: ./gradlew :webp-natives-macos:copyMacosDylibX64 --no-daemon
 
@@ -167,6 +179,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      - name: Install NASM (libvpx dependency)
+        run: brew install nasm
+        shell: bash
 
       - name: Build macOS arm64 dylib
         run: ./gradlew :webp-natives-macos:copyMacosDylibArm64 --no-daemon
