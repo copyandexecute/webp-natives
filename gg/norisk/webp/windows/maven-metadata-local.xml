@@ -3,11 +3,11 @@
   <groupId>gg.norisk.webp</groupId>
   <artifactId>windows</artifactId>
   <versioning>
-    <latest>26.3.2-main</latest>
-    <release>26.3.2-main</release>
+    <latest>26.3.3-main</latest>
+    <release>26.3.3-main</release>
     <versions>
-      <version>26.3.2-main</version>
+      <version>26.3.3-main</version>
     </versions>
-    <lastUpdated>20260706085244</lastUpdated>
+    <lastUpdated>20260706094800</lastUpdated>
   </versioning>
 </metadata>

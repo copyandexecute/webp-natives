@@ -1,0 +1,118 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "gg.norisk.webp",
+    "module": "windows",
+    "version": "26.3.3-main",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.4.1"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "gg.norisk.webp",
+          "module": "core",
+          "version": {
+            "requires": "26.3.3-main"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "windows-26.3.3-main.jar",
+          "url": "windows-26.3.3-main.jar",
+          "size": 2029127,
+          "sha512": "20b1b3a14d8f471e94559cf9d3b0385d5c6e82949a667a00c5c900ca70d6c861a9fe1048af5350267354d84962b08842a5d9e017a3d6ba4d3f5344c4d7abefbb",
+          "sha256": "71a98dd4745c03041e2ff54b2cf77195b8487f853eedee4cac06997838184192",
+          "sha1": "9fc5eb436bdf9f71e06737666ddab9b965a7ff17",
+          "md5": "d2be0a583b0f967ebb4ad274bae932dd"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "gg.norisk.webp",
+          "module": "core",
+          "version": {
+            "requires": "26.3.3-main"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "windows-26.3.3-main.jar",
+          "url": "windows-26.3.3-main.jar",
+          "size": 2029127,
+          "sha512": "20b1b3a14d8f471e94559cf9d3b0385d5c6e82949a667a00c5c900ca70d6c861a9fe1048af5350267354d84962b08842a5d9e017a3d6ba4d3f5344c4d7abefbb",
+          "sha256": "71a98dd4745c03041e2ff54b2cf77195b8487f853eedee4cac06997838184192",
+          "sha1": "9fc5eb436bdf9f71e06737666ddab9b965a7ff17",
+          "md5": "d2be0a583b0f967ebb4ad274bae932dd"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "windows-26.3.3-main-sources.jar",
+          "url": "windows-26.3.3-main-sources.jar",
+          "size": 2029127,
+          "sha512": "20b1b3a14d8f471e94559cf9d3b0385d5c6e82949a667a00c5c900ca70d6c861a9fe1048af5350267354d84962b08842a5d9e017a3d6ba4d3f5344c4d7abefbb",
+          "sha256": "71a98dd4745c03041e2ff54b2cf77195b8487f853eedee4cac06997838184192",
+          "sha1": "9fc5eb436bdf9f71e06737666ddab9b965a7ff17",
+          "md5": "d2be0a583b0f967ebb4ad274bae932dd"
+        }
+      ]
+    },
+    {
+      "name": "javadocElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "javadoc",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "windows-26.3.3-main-javadoc.jar",
+          "url": "windows-26.3.3-main-javadoc.jar",
+          "size": 261,
+          "sha512": "1487e5a20c9e4d74f298e07c42e96a61be11b7a768c3fbc199ee138cd68e1fc2267d1cfe3f11f288acc05df755315344d052cc5f6f751f126ab4fe1caa5125ea",
+          "sha256": "c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3",
+          "sha1": "2ad14aed781c4a73ed4dbb421966d408a0a06686",
+          "md5": "f43436d6bec321290f6af228ad602604"
+        }
+      ]
+    }
+  ]
+}
