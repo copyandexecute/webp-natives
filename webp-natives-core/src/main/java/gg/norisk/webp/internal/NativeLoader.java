@@ -77,7 +77,7 @@ public final class NativeLoader {
         String libFileName = libFileName(os);
         String resource = "/native/" + os + "/" + arch + "/" + libFileName;
 
-        InputStream in = NativeLoader.class.getResourceAsStream(resource);
+        InputStream in = findResource(resource);
         if (in == null) {
             throw new IOException("No native library bundled for " + os + "/" + arch + " (looked for " + resource + ")");
         }
@@ -97,6 +97,32 @@ public final class NativeLoader {
         }
 
         System.load(target.getAbsolutePath());
+    }
+
+    /**
+     * Resolves the native resource across classloader setups. A plain
+     * {@code Class.getResourceAsStream} only searches the jar/module that
+     * defined this class — on module-isolating launchers (Forge ModLauncher's
+     * SecureJar layers) that misses the platform jar holding the binary, even
+     * though it sits on the same classpath. The loader-level lookups below
+     * search every jar the respective loader can see.
+     */
+    private static InputStream findResource(String resource) {
+        InputStream in = NativeLoader.class.getResourceAsStream(resource);
+        if (in != null) return in;
+
+        String relative = resource.startsWith("/") ? resource.substring(1) : resource;
+        ClassLoader own = NativeLoader.class.getClassLoader();
+        if (own != null) {
+            in = own.getResourceAsStream(relative);
+            if (in != null) return in;
+        }
+        ClassLoader context = Thread.currentThread().getContextClassLoader();
+        if (context != null && context != own) {
+            in = context.getResourceAsStream(relative);
+            if (in != null) return in;
+        }
+        return ClassLoader.getSystemResourceAsStream(relative);
     }
 
     private static String libFileName(String os) {
