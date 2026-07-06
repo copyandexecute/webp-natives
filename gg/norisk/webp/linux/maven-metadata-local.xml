@@ -3,11 +3,11 @@
   <groupId>gg.norisk.webp</groupId>
   <artifactId>linux</artifactId>
   <versioning>
-    <latest>26.3.3-main</latest>
-    <release>26.3.3-main</release>
+    <latest>26.3.4-main</latest>
+    <release>26.3.4-main</release>
     <versions>
-      <version>26.3.3-main</version>
+      <version>26.3.4-main</version>
     </versions>
-    <lastUpdated>20260706094950</lastUpdated>
+    <lastUpdated>20260706103812</lastUpdated>
   </versioning>
 </metadata>
