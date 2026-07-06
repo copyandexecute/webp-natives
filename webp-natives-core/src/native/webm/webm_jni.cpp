@@ -156,7 +156,8 @@ Java_gg_norisk_webm_internal_WebMNative_encodeVp9(JNIEnv* env, jclass cls,
 }
 
 JNIEXPORT jlong JNICALL
-Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyteArray data) {
+Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyteArray data,
+                                                    jint maxWidth, jint maxHeight) {
     (void) cls;
     if (data == nullptr) return 0;
     const jsize len = env->GetArrayLength(data);
@@ -166,7 +167,8 @@ Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyt
     if (bytes == nullptr) return 0;
 
     webm_codec::Decoder* decoder = webm_codec::Decoder::open(
-        reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len));
+        reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len),
+        static_cast<int>(maxWidth), static_cast<int>(maxHeight));
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
     if (decoder == nullptr) return 0;

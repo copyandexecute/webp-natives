@@ -35,6 +35,7 @@ public class WebmSmokeTest {
         realisticScenario();  // 720p clip, throughput + proves decode stays lazy
         oddDimensionScenario(); // odd w/h — regression guard for the chroma-overflow crash
         streamingScenario();  // WebMEncoder: per-frame feed, int[] + direct-RGBA paths
+        scaledDecodeScenario(); // decode-time YUV downscale
 
         System.out.println("\nWEBM SMOKE TEST PASSED.");
     }
@@ -286,6 +287,58 @@ public class WebmSmokeTest {
                 tag, badRatio, meanErr);
             if (badRatio > MAX_BAD_PIXEL_RATIO) fail(tag + ": too many off-tolerance pixels: " + badRatio);
             if (meanErr > MAX_MEAN_ABS_ERROR) fail(tag + ": mean per-channel error too high: " + meanErr);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Scenario 5 — decode-time downscale. A 1280x720 clip opened with a
+    //  640x360 bound must report and deliver scaled frames, and the scaled
+    //  pixels must still resemble the source (checked against a reference
+    //  frame sampled at the scaled grid, with a loose tolerance to allow
+    //  for the bilinear YUV scale).
+    // ─────────────────────────────────────────────────────────────────
+    private static void scaledDecodeScenario() throws Exception {
+        final int W = 1280, H = 720, N = 24, TW = 640, TH = 360;
+        System.out.println("\n=== scaled-decode scenario: " + W + "x" + H + " -> max " + TW + "x" + TH + " ===");
+
+        BufferedImage[] frames = new BufferedImage[N];
+        int[] durationsMs = new int[N];
+        for (int i = 0; i < N; i++) {
+            frames[i] = makeFrame(W, H, i, N);
+            durationsMs[i] = FRAME_MS;
+        }
+        byte[] webm = WebM.encodeFast(frames, durationsMs);
+
+        try (WebMDecoder decoder = WebM.decode(webm, TW, TH)) {
+            WebMInfo info = decoder.info();
+            System.out.println("[scaled] decoded info: " + info);
+            if (info.width() != TW || info.height() != TH) fail("scaled: expected " + TW + "x" + TH + ", got " + info);
+
+            int n = 0;
+            long absErr = 0, samples = 0;
+            while (decoder.hasMoreFrames() && n < N) {
+                WebMFrame frame = decoder.nextFrame();
+                BufferedImage img = frame.image();
+                if (img.getWidth() != TW || img.getHeight() != TH) fail("scaled: frame size " + img.getWidth() + "x" + img.getHeight());
+                if (n % 8 == 0) {
+                    BufferedImage ref = makeFrame(W, H, n, N);
+                    for (int y = 4; y < TH - 4; y += 24) {
+                        for (int x = 4; x < TW - 4; x += 24) {
+                            int a = img.getRGB(x, y);
+                            int e = ref.getRGB(x * 2, y * 2);
+                            absErr += Math.abs(((e >> 16) & 0xFF) - ((a >> 16) & 0xFF))
+                                + Math.abs(((e >> 8) & 0xFF) - ((a >> 8) & 0xFF))
+                                + Math.abs((e & 0xFF) - (a & 0xFF));
+                            samples += 3;
+                        }
+                    }
+                }
+                n++;
+            }
+            if (n < N - 2) fail("scaled: decoded too few frames (" + n + ")");
+            double meanErr = (double) absErr / samples;
+            System.out.printf("[scaled] frames=%d, spot mean abs err=%.2f/ch%n", n, meanErr);
+            if (meanErr > 26.0) fail("scaled: pixels drifted too far from source: " + meanErr);
         }
     }
 

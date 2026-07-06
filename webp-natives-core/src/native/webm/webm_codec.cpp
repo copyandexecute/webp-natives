@@ -158,8 +158,14 @@ bool Encoder::init(int width, int height, const EncoderOptions& opts) {
 
     vpx_codec_control(&codec_, VP8E_SET_CPUUSED, opts.cpu_used);
     vpx_codec_control(&codec_, VP9E_SET_TILE_COLUMNS, tile_columns_log2(width));
+    // Tile columns bottom out at 4 below 2560px (256px minimum tile width);
+    // a tile-row split adds parallel granularity beyond that for row-mt.
+    vpx_codec_control(&codec_, VP9E_SET_TILE_ROWS, height >= 480 ? 1 : 0);
     vpx_codec_control(&codec_, VP9E_SET_ROW_MT, 1);
     vpx_codec_control(&codec_, VP9E_SET_FRAME_PARALLEL_DECODING, 1);
+    // Skip near-identical blocks entirely — gameplay frames carry large
+    // static regions (HUD, sky) that don't need re-encoding every frame.
+    vpx_codec_control(&codec_, VP8E_SET_STATIC_THRESHOLD, 1);
     if (opts.rc_mode == 2) {
         const int cq = std::max(0, std::min(63, opts.cq_level));
         vpx_codec_control(&codec_, VP8E_SET_CQ_LEVEL, cq);
@@ -315,10 +321,10 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
 //  Streaming decoder
 // ─────────────────────────────────────────────────────────────────
 
-Decoder* Decoder::open(const uint8_t* data, size_t size) {
+Decoder* Decoder::open(const uint8_t* data, size_t size, int max_width, int max_height) {
     if (data == nullptr || size == 0) return nullptr;
     auto* d = new Decoder();
-    if (!d->init(data, size)) {
+    if (!d->init(data, size, max_width, max_height)) {
         delete d;
         return nullptr;
     }
@@ -333,7 +339,7 @@ Decoder::~Decoder() {
     delete static_cast<MemoryReader*>(reader_);
 }
 
-bool Decoder::init(const uint8_t* data, size_t size) {
+bool Decoder::init(const uint8_t* data, size_t size, int max_width, int max_height) {
     buffer_.assign(data, data + size);
     reader_ = new MemoryReader(buffer_.data(), buffer_.size());
 
@@ -374,8 +380,19 @@ bool Decoder::init(const uint8_t* data, size_t size) {
     }
     codec_inited_ = true;
 
-    info_.width = width;
-    info_.height = height;
+    // Decode-time downscale: pick the fit-inside target once (even dims —
+    // callers feed the pixels back into 4:2:0 encoders and texture uploads).
+    if (max_width > 0 && max_height > 0 && (width > max_width || height > max_height)) {
+        const double scale = std::min(static_cast<double>(max_width) / width,
+                                      static_cast<double>(max_height) / height);
+        target_w_ = std::max(2, static_cast<int>(width * scale)) & ~1;
+        target_h_ = std::max(2, static_cast<int>(height * scale)) & ~1;
+        info_.width = target_w_;
+        info_.height = target_h_;
+    } else {
+        info_.width = width;
+        info_.height = height;
+    }
     scan_timestamps();  // header-only: frame_count + per-frame timestamps + duration
 
     // Position the decode cursor at the first cluster, then prime one frame.
@@ -474,16 +491,40 @@ void Decoder::decode_one_packet() {
     while ((img = vpx_codec_get_frame(&codec_, &iter)) != nullptr) {
         if (img->fmt != VPX_IMG_FMT_I420) continue;
         WebMFrame fr;
-        fr.width = static_cast<int>(img->d_w);
-        fr.height = static_cast<int>(img->d_h);
-        fr.argb.resize(static_cast<size_t>(img->d_w) * img->d_h * 4);
+
+        const uint8_t* y = img->planes[VPX_PLANE_Y];
+        const uint8_t* u = img->planes[VPX_PLANE_U];
+        const uint8_t* v = img->planes[VPX_PLANE_V];
+        int y_stride = img->stride[VPX_PLANE_Y];
+        int uv_stride = img->stride[VPX_PLANE_U];
+        int out_w = static_cast<int>(img->d_w);
+        int out_h = static_cast<int>(img->d_h);
+
+        // Downscale on the YUV planes (1.5 bytes/px) before the ARGB blow-up —
+        // far cheaper than converting the full frame and scaling in ARGB.
+        if (target_w_ > 0 && (out_w != target_w_ || out_h != target_h_)) {
+            const int tw = target_w_, th = target_h_;
+            const int cw = (tw + 1) / 2, ch = (th + 1) / 2;
+            scale_buf_.resize(static_cast<size_t>(tw) * th + 2u * cw * ch);
+            uint8_t* sy = scale_buf_.data();
+            uint8_t* su = sy + static_cast<size_t>(tw) * th;
+            uint8_t* sv = su + static_cast<size_t>(cw) * ch;
+            libyuv::I420Scale(y, y_stride, u, uv_stride, v, uv_stride, out_w, out_h,
+                              sy, tw, su, cw, sv, cw, tw, th,
+                              libyuv::kFilterBilinear);
+            y = sy; u = su; v = sv;
+            y_stride = tw; uv_stride = cw;
+            out_w = tw; out_h = th;
+        }
+
+        fr.width = out_w;
+        fr.height = out_h;
+        fr.argb.resize(static_cast<size_t>(out_w) * out_h * 4);
         // libyuv writes B,G,R,A bytes ("ARGB" fourcc) — a Java TYPE_INT_ARGB
         // int[] on little-endian, matching the historical scalar output.
-        libyuv::I420ToARGB(img->planes[VPX_PLANE_Y], img->stride[VPX_PLANE_Y],
-                           img->planes[VPX_PLANE_U], img->stride[VPX_PLANE_U],
-                           img->planes[VPX_PLANE_V], img->stride[VPX_PLANE_V],
-                           fr.argb.data(), fr.width * 4,
-                           fr.width, fr.height);
+        libyuv::I420ToARGB(y, y_stride, u, uv_stride, v, uv_stride,
+                           fr.argb.data(), out_w * 4,
+                           out_w, out_h);
         pending_.push_back(std::move(fr));
     }
 }

@@ -17,10 +17,20 @@ public final class WebMDecoder implements AutoCloseable {
     }
 
     public static WebMDecoder open(byte[] data) throws WebMException {
+        return open(data, 0, 0);
+    }
+
+    /**
+     * Opens the stream with a decode-time downscale: frames larger than
+     * maxWidth x maxHeight are scaled (on the YUV planes, before the ARGB
+     * conversion) to fit inside. {@link #info()} and frames report the
+     * scaled size. Pass 0/0 for native size.
+     */
+    public static WebMDecoder open(byte[] data, int maxWidth, int maxHeight) throws WebMException {
         if (data == null || data.length == 0) {
             throw new WebMException("input bytes are null or empty");
         }
-        long h = WebMNative.decodeOpen(data);
+        long h = WebMNative.decodeOpen(data, maxWidth, maxHeight);
         if (h == 0L) {
             throw new WebMException("Failed to open WebM (not a valid VP9/WebM stream)");
         }

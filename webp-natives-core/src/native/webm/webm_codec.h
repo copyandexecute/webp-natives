@@ -116,8 +116,14 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
  */
 class Decoder {
 public:
-    /** Parse the container + init the VP9 decoder. Returns nullptr on failure. */
-    static Decoder* open(const uint8_t* data, size_t size);
+    /**
+     * Parse the container + init the VP9 decoder. Returns nullptr on failure.
+     * When max_width/max_height are > 0 and the stream is larger, every frame
+     * is downscaled (SIMD, on the YUV planes) to fit inside the bounds before
+     * the ARGB conversion — info() and frames report the scaled size.
+     */
+    static Decoder* open(const uint8_t* data, size_t size,
+                         int max_width = 0, int max_height = 0);
     ~Decoder();
 
     Decoder(const Decoder&) = delete;
@@ -134,7 +140,7 @@ public:
 private:
     Decoder() = default;
 
-    bool init(const uint8_t* data, size_t size);
+    bool init(const uint8_t* data, size_t size, int max_width, int max_height);
     void scan_timestamps();
     bool read_next_coded_frame(std::vector<uint8_t>& buf);
     void decode_one_packet();
@@ -150,6 +156,11 @@ private:
     long video_track_ = -1;
     WebMInfo info_{};
     std::vector<int> frame_ts_ms_;            // per-frame timestamps from the header scan
+
+    // Decode-time downscale target (0 = deliver native size).
+    int target_w_ = 0;
+    int target_h_ = 0;
+    std::vector<uint8_t> scale_buf_;          // scaled I420 planes scratch
 
     // Decode cursor (resumable position in the cluster/block tree).
     const mkvparser::Cluster* cluster_ = nullptr;

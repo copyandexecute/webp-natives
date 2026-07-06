@@ -38,7 +38,7 @@ public final class WebMNative {
 
     public static native void encoderClose(long handle);
 
-    public static native long decodeOpen(byte[] data);
+    public static native long decodeOpen(byte[] data, int maxWidth, int maxHeight);
 
     public static native int[] decodeGetInfo(long handle);
 
