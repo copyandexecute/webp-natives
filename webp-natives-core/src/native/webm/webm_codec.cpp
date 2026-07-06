@@ -1,7 +1,10 @@
 #include "webm_codec.h"
 
+#include <algorithm>
 #include <cstring>
+#include <thread>
 #include <utility>
+#include <libyuv.h>
 #include <mkvmuxer/mkvmuxer.h>
 #include <mkvparser/mkvparser.h>
 #include <vpx/vp8cx.h>
@@ -39,7 +42,7 @@ public:
 
     void ElementStartNotify(mkvmuxer::uint64 /*element_id*/, mkvmuxer::int64 /*position*/) override {}
 
-    const std::vector<uint8_t>& data() const { return data_; }
+    std::vector<uint8_t>& data() { return data_; }
 
 private:
     std::vector<uint8_t> data_;
@@ -72,54 +75,217 @@ private:
     size_t size_;
 };
 
-// Writes into caller-provided I420 planes using their real strides. Chroma is
-// indexed with the actual UV stride (= ceil(width/2) for an allocated image),
-// so odd width/height never overflow the planes.
-void argb_to_i420(const uint32_t* argb, int width, int height,
-                  uint8_t* y, int y_stride,
-                  uint8_t* u, uint8_t* v, int uv_stride) {
-    for (int j = 0; j < height; ++j) {
-        for (int i = 0; i < width; ++i) {
-            const uint32_t p = argb[j * width + i];
-            const int b = p & 0xFF;
-            const int g = (p >> 8) & 0xFF;
-            const int r = (p >> 16) & 0xFF;
-            const int y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y[j * y_stride + i] = static_cast<uint8_t>(y_val < 0 ? 0 : (y_val > 255 ? 255 : y_val));
-            if ((j & 1) == 0 && (i & 1) == 0) {
-                const int u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                const int v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                const int uv_idx = (j / 2) * uv_stride + (i / 2);
-                u[uv_idx] = static_cast<uint8_t>(u_val < 0 ? 0 : (u_val > 255 ? 255 : u_val));
-                v[uv_idx] = static_cast<uint8_t>(v_val < 0 ? 0 : (v_val > 255 ? 255 : v_val));
-            }
-        }
-    }
+int auto_threads(int requested) {
+    if (requested > 0) return std::min(requested, 16);
+    const unsigned hw = std::thread::hardware_concurrency();
+    return static_cast<int>(std::min(hw == 0 ? 1u : hw, 8u));
 }
 
-void i420_to_argb(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                  int y_stride, int uv_stride, int width, int height, uint32_t* argb) {
-    for (int j = 0; j < height; ++j) {
-        for (int i = 0; i < width; ++i) {
-            const int y_val = y[j * y_stride + i];
-            const int uv_idx = (j / 2) * uv_stride + (i / 2);
-            const int u_val = u[uv_idx] - 128;
-            const int v_val = v[uv_idx] - 128;
-            int r = y_val + ((91881 * v_val) >> 16);
-            int g = y_val - ((22554 * u_val + 46802 * v_val) >> 16);
-            int b = y_val + ((116130 * u_val) >> 16);
-            r = r < 0 ? 0 : (r > 255 ? 255 : r);
-            g = g < 0 ? 0 : (g > 255 ? 255 : g);
-            b = b < 0 ? 0 : (b > 255 ? 255 : b);
-            argb[j * width + i] = 0xFF000000u | (static_cast<uint32_t>(r) << 16)
-                | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
-        }
-    }
+// VP9 only parallelizes across tile columns (plus row-mt within them); pick
+// the widest tiling the resolution allows so g_threads can actually bite.
+int tile_columns_log2(int width) {
+    if (width >= 2560) return 3;
+    if (width >= 1280) return 2;
+    if (width >= 640) return 1;
+    return 0;
 }
 
 }  // namespace
 
 namespace webm_codec {
+
+// ─────────────────────────────────────────────────────────────────
+//  Streaming encoder
+// ─────────────────────────────────────────────────────────────────
+
+class Encoder::Writer {
+public:
+    MemoryWriter mem;
+    mkvmuxer::Segment segment;
+};
+
+Encoder* Encoder::create(int width, int height, const EncoderOptions& opts) {
+    if (width <= 0 || height <= 0) return nullptr;
+    auto* e = new Encoder();
+    if (!e->init(width, height, opts)) {
+        delete e;
+        return nullptr;
+    }
+    return e;
+}
+
+Encoder::~Encoder() {
+    if (img_inited_) vpx_img_free(&img_);
+    if (codec_inited_) vpx_codec_destroy(&codec_);
+}
+
+bool Encoder::init(int width, int height, const EncoderOptions& opts) {
+    width_ = width;
+    height_ = height;
+
+    vpx_codec_enc_cfg_t cfg;
+    if (vpx_codec_enc_config_default(vpx_codec_vp9_cx(), &cfg, 0) != VPX_CODEC_OK) {
+        return false;
+    }
+    cfg.g_w = width;
+    cfg.g_h = height;
+    cfg.g_timebase.num = 1;
+    cfg.g_timebase.den = 1000;
+    cfg.g_lag_in_frames = 0;
+    cfg.g_threads = auto_threads(opts.threads);
+    cfg.rc_target_bitrate = opts.bitrate_kbps;
+    cfg.g_error_resilient = VPX_ERROR_RESILIENT_DEFAULT;
+    cfg.kf_mode = VPX_KF_AUTO;
+    cfg.kf_max_dist = opts.kf_max_dist > 0 ? opts.kf_max_dist : 30;
+
+    switch (opts.rc_mode) {
+        case 1: cfg.rc_end_usage = VPX_VBR; break;
+        case 2: cfg.rc_end_usage = VPX_CQ; break;
+        default: cfg.rc_end_usage = VPX_CBR; break;
+    }
+    if (opts.min_quantizer >= 0) cfg.rc_min_quantizer = opts.min_quantizer;
+    if (opts.max_quantizer >= 0) cfg.rc_max_quantizer = opts.max_quantizer;
+    if (opts.rc_mode == 2) {
+        // CQ level must sit inside [min_q, max_q] or libvpx ignores it.
+        if (opts.min_quantizer < 0) cfg.rc_min_quantizer = 4;
+        if (opts.max_quantizer < 0) cfg.rc_max_quantizer = 56;
+    }
+
+    if (vpx_codec_enc_init(&codec_, vpx_codec_vp9_cx(), &cfg, 0) != VPX_CODEC_OK) {
+        return false;
+    }
+    codec_inited_ = true;
+
+    vpx_codec_control(&codec_, VP8E_SET_CPUUSED, opts.cpu_used);
+    vpx_codec_control(&codec_, VP9E_SET_TILE_COLUMNS, tile_columns_log2(width));
+    vpx_codec_control(&codec_, VP9E_SET_ROW_MT, 1);
+    vpx_codec_control(&codec_, VP9E_SET_FRAME_PARALLEL_DECODING, 1);
+    if (opts.rc_mode == 2) {
+        const int cq = std::max(0, std::min(63, opts.cq_level));
+        vpx_codec_control(&codec_, VP8E_SET_CQ_LEVEL, cq);
+    } else if (opts.cpu_used >= 5) {
+        // Cyclic-refresh AQ: the standard realtime-CBR quality boost.
+        vpx_codec_control(&codec_, VP9E_SET_AQ_MODE, 3);
+    }
+
+    writer_.reset(new Writer());
+    if (!writer_->segment.Init(&writer_->mem)) return false;
+
+    track_ = writer_->segment.AddVideoTrack(static_cast<int32_t>(width),
+                                            static_cast<int32_t>(height), 1);
+    mkvmuxer::Track* video = writer_->segment.GetTrackByNumber(track_);
+    if (video == nullptr) return false;
+    video->set_codec_id(mkvmuxer::Tracks::kVp9CodecId);
+    mkvmuxer::SegmentInfo* info = writer_->segment.GetSegmentInfo();
+    info->set_timecode_scale(1000000);  // ns per tick → 1 tick = 1ms
+    info->set_writing_app("webp-natives");
+
+    // Allocate the I420 source image once and reuse it per frame. libvpx sizes
+    // the planes with the correct (ceil) chroma dimensions and its own aligned
+    // strides, so odd widths/heights can't overflow. align=32 matches the
+    // encoder's SIMD expectations.
+    if (vpx_img_alloc(&img_, VPX_IMG_FMT_I420, width, height, 32) == nullptr) {
+        return false;
+    }
+    img_inited_ = true;
+    return true;
+}
+
+void Encoder::load_argb(const uint32_t* argb) {
+    // Java TYPE_INT_ARGB words are B,G,R,A bytes on little-endian — exactly
+    // libyuv's "ARGB" byte order.
+    libyuv::ARGBToI420(reinterpret_cast<const uint8_t*>(argb), width_ * 4,
+                       img_.planes[VPX_PLANE_Y], img_.stride[VPX_PLANE_Y],
+                       img_.planes[VPX_PLANE_U], img_.stride[VPX_PLANE_U],
+                       img_.planes[VPX_PLANE_V], img_.stride[VPX_PLANE_V],
+                       width_, height_);
+}
+
+void Encoder::load_rgba(const uint8_t* rgba) {
+    // R,G,B,A byte order (GL_RGBA readback) is libyuv's "ABGR" fourcc.
+    libyuv::ABGRToI420(rgba, width_ * 4,
+                       img_.planes[VPX_PLANE_Y], img_.stride[VPX_PLANE_Y],
+                       img_.planes[VPX_PLANE_U], img_.stride[VPX_PLANE_U],
+                       img_.planes[VPX_PLANE_V], img_.stride[VPX_PLANE_V],
+                       width_, height_);
+}
+
+bool Encoder::encode_loaded(int duration_ms) {
+    if (finished_) return false;
+    return encode_current_image(duration_ms);
+}
+
+bool Encoder::add_frame(const uint32_t* argb, int duration_ms) {
+    if (finished_ || argb == nullptr) return false;
+    load_argb(argb);
+    return encode_current_image(duration_ms);
+}
+
+bool Encoder::add_frame_rgba(const uint8_t* rgba, int duration_ms) {
+    if (finished_ || rgba == nullptr) return false;
+    load_rgba(rgba);
+    return encode_current_image(duration_ms);
+}
+
+bool Encoder::encode_current_image(int duration_ms) {
+    const int dur = duration_ms > 0 ? duration_ms : 1;
+    if (vpx_codec_encode(&codec_, &img_, pts_ms_, dur, 0, VPX_DL_REALTIME) != VPX_CODEC_OK) {
+        return false;
+    }
+    if (!drain_packets()) return false;
+    pts_ms_ += dur;
+    return true;
+}
+
+bool Encoder::drain_packets() {
+    vpx_codec_iter_t iter = nullptr;
+    const vpx_codec_cx_pkt_t* pkt;
+    while ((pkt = vpx_codec_get_cx_data(&codec_, &iter)) != nullptr) {
+        if (pkt->kind != VPX_CODEC_CX_FRAME_PKT) continue;
+        const bool keyframe = (pkt->data.frame.flags & VPX_FRAME_IS_KEY) != 0;
+        const uint64_t ts_ns = static_cast<uint64_t>(pkt->data.frame.pts) * 1000000ULL;
+        if (!writer_->segment.AddFrame(static_cast<const uint8_t*>(pkt->data.frame.buf),
+                                       pkt->data.frame.sz, track_, ts_ns, keyframe)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Encoder::finish(std::vector<uint8_t>& out) {
+    if (finished_) return false;
+    finished_ = true;
+
+    // Flush any frames still buffered inside libvpx (none with lag=0, but the
+    // flush contract requires draining until the codec reports empty).
+    for (;;) {
+        if (vpx_codec_encode(&codec_, nullptr, pts_ms_, 1, 0, VPX_DL_REALTIME) != VPX_CODEC_OK) {
+            return false;
+        }
+        vpx_codec_iter_t iter = nullptr;
+        const vpx_codec_cx_pkt_t* pkt = vpx_codec_get_cx_data(&codec_, &iter);
+        if (pkt == nullptr) break;
+        do {
+            if (pkt->kind == VPX_CODEC_CX_FRAME_PKT) {
+                const bool keyframe = (pkt->data.frame.flags & VPX_FRAME_IS_KEY) != 0;
+                const uint64_t ts_ns = static_cast<uint64_t>(pkt->data.frame.pts) * 1000000ULL;
+                if (!writer_->segment.AddFrame(static_cast<const uint8_t*>(pkt->data.frame.buf),
+                                               pkt->data.frame.sz, track_, ts_ns, keyframe)) {
+                    return false;
+                }
+            }
+        } while ((pkt = vpx_codec_get_cx_data(&codec_, &iter)) != nullptr);
+    }
+
+    writer_->segment.GetSegmentInfo()->set_duration(static_cast<double>(pts_ms_));
+    if (!writer_->segment.Finalize()) return false;
+    out = std::move(writer_->mem.data());
+    return !out.empty();
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Batch encode — thin wrapper over the streaming encoder.
+// ─────────────────────────────────────────────────────────────────
 
 bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
                 int width, int height,
@@ -131,110 +297,18 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
         return false;
     }
 
-    vpx_codec_ctx_t codec;
-    vpx_codec_enc_cfg_t cfg;
-    if (vpx_codec_enc_config_default(vpx_codec_vp9_cx(), &cfg, 0) != VPX_CODEC_OK) {
-        return false;
-    }
-    cfg.g_w = width;
-    cfg.g_h = height;
-    cfg.g_timebase.num = 1;
-    cfg.g_timebase.den = 1000;
-    cfg.g_lag_in_frames = 0;
-    cfg.rc_target_bitrate = bitrate_kbps;
-    cfg.rc_end_usage = VPX_CBR;
-    cfg.g_error_resilient = VPX_ERROR_RESILIENT_DEFAULT;
-    cfg.kf_mode = VPX_KF_AUTO;
-    cfg.kf_max_dist = 30;
+    EncoderOptions opts;
+    opts.cpu_used = cpu_used;
+    opts.bitrate_kbps = bitrate_kbps;
 
-    if (vpx_codec_enc_init(&codec, vpx_codec_vp9_cx(), &cfg, 0) != VPX_CODEC_OK) {
-        return false;
-    }
-    vpx_codec_control(&codec, VP8E_SET_CPUUSED, cpu_used);
-
-    MemoryWriter writer;
-    mkvmuxer::Segment segment;
-    if (!segment.Init(&writer)) {
-        vpx_codec_destroy(&codec);
-        return false;
-    }
-
-    const uint64_t track = segment.AddVideoTrack(static_cast<int32_t>(width),
-                                                 static_cast<int32_t>(height), 1);
-    mkvmuxer::Track* video = segment.GetTrackByNumber(track);
-    if (video == nullptr) {
-        vpx_codec_destroy(&codec);
-        return false;
-    }
-    video->set_codec_id(mkvmuxer::Tracks::kVp9CodecId);
-    mkvmuxer::SegmentInfo* info = segment.GetSegmentInfo();
-    info->set_timecode_scale(1000000);  // ns per tick → 1 tick = 1ms
-    info->set_writing_app("webp-natives");
-
-    // Allocate the I420 source image once and reuse it per frame. libvpx sizes
-    // the planes with the correct (ceil) chroma dimensions and its own aligned
-    // strides, so odd widths/heights can't overflow — unlike a hand-packed
-    // tight buffer, which wrote past the chroma planes on odd dimensions and
-    // corrupted the heap. align=32 matches the encoder's SIMD expectations.
-    vpx_image_t img;
-    if (vpx_img_alloc(&img, VPX_IMG_FMT_I420, width, height, 32) == nullptr) {
-        vpx_codec_destroy(&codec);
-        return false;
-    }
-
-    int64_t pts_ms = 0;
-    int total_duration_ms = 0;
+    std::unique_ptr<Encoder> enc(Encoder::create(width, height, opts));
+    if (!enc) return false;
 
     for (size_t fi = 0; fi < frames.size(); ++fi) {
-        if (static_cast<int>(frames[fi].size()) < width * height) {
-            vpx_img_free(&img);
-            vpx_codec_destroy(&codec);
-            return false;
-        }
-
-        argb_to_i420(frames[fi].data(), width, height,
-                     img.planes[VPX_PLANE_Y], img.stride[VPX_PLANE_Y],
-                     img.planes[VPX_PLANE_U], img.planes[VPX_PLANE_V],
-                     img.stride[VPX_PLANE_U]);
-
-        const vpx_codec_err_t enc_err = vpx_codec_encode(
-            &codec, &img, pts_ms, durations_ms[fi], 0, VPX_DL_REALTIME);
-        if (enc_err != VPX_CODEC_OK) {
-            vpx_img_free(&img);
-            vpx_codec_destroy(&codec);
-            return false;
-        }
-
-        vpx_codec_iter_t iter = nullptr;
-        const vpx_codec_cx_pkt_t* pkt;
-        while ((pkt = vpx_codec_get_cx_data(&codec, &iter)) != nullptr) {
-            if (pkt->kind == VPX_CODEC_CX_FRAME_PKT) {
-                const bool keyframe = (pkt->data.frame.flags & VPX_FRAME_IS_KEY) != 0;
-                const uint64_t ts_ns = static_cast<uint64_t>(pts_ms) * 1000000ULL;
-                if (!segment.AddFrame(static_cast<const uint8_t*>(pkt->data.frame.buf),
-                                      pkt->data.frame.sz, track, ts_ns, keyframe)) {
-                    vpx_img_free(&img);
-                    vpx_codec_destroy(&codec);
-                    return false;
-                }
-            }
-        }
-
-        pts_ms += durations_ms[fi];
-        total_duration_ms += durations_ms[fi];
+        if (static_cast<int>(frames[fi].size()) < width * height) return false;
+        if (!enc->add_frame(frames[fi].data(), durations_ms[fi])) return false;
     }
-
-    info->set_duration(static_cast<double>(total_duration_ms));
-    vpx_img_free(&img);
-
-    if (!segment.Finalize()) {
-        vpx_codec_destroy(&codec);
-        return false;
-    }
-
-    vpx_codec_destroy(&codec);
-    out = writer.data();
-    return !out.empty();
+    return enc->finish(out);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -290,7 +364,12 @@ bool Decoder::init(const uint8_t* data, size_t size) {
     }
     if (video_track_ < 0 || width <= 0 || height <= 0) return false;
 
-    if (vpx_codec_dec_init(&codec_, vpx_codec_vp9_dx(), nullptr, 0) != VPX_CODEC_OK) {
+    // Multi-threaded decode: VP9 frame-level threading kicks in when the
+    // stream was encoded with frame-parallel mode / tiles (ours is).
+    vpx_codec_dec_cfg_t dec_cfg;
+    std::memset(&dec_cfg, 0, sizeof(dec_cfg));
+    dec_cfg.threads = static_cast<unsigned int>(auto_threads(0));
+    if (vpx_codec_dec_init(&codec_, vpx_codec_vp9_dx(), &dec_cfg, 0) != VPX_CODEC_OK) {
         return false;
     }
     codec_inited_ = true;
@@ -398,9 +477,13 @@ void Decoder::decode_one_packet() {
         fr.width = static_cast<int>(img->d_w);
         fr.height = static_cast<int>(img->d_h);
         fr.argb.resize(static_cast<size_t>(img->d_w) * img->d_h * 4);
-        i420_to_argb(img->planes[VPX_PLANE_Y], img->planes[VPX_PLANE_U], img->planes[VPX_PLANE_V],
-                     img->stride[VPX_PLANE_Y], img->stride[VPX_PLANE_U],
-                     fr.width, fr.height, reinterpret_cast<uint32_t*>(fr.argb.data()));
+        // libyuv writes B,G,R,A bytes ("ARGB" fourcc) — a Java TYPE_INT_ARGB
+        // int[] on little-endian, matching the historical scalar output.
+        libyuv::I420ToARGB(img->planes[VPX_PLANE_Y], img->stride[VPX_PLANE_Y],
+                           img->planes[VPX_PLANE_U], img->stride[VPX_PLANE_U],
+                           img->planes[VPX_PLANE_V], img->stride[VPX_PLANE_V],
+                           fr.argb.data(), fr.width * 4,
+                           fr.width, fr.height);
         pending_.push_back(std::move(fr));
     }
 }

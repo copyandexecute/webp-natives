@@ -3,9 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include <vpx/vpx_decoder.h>
+#include <vpx/vpx_encoder.h>
 #include <mkvparser/mkvparser.h>
 
 namespace webm_codec {
@@ -23,6 +25,77 @@ struct WebMInfo {
     int height = 0;
     int frame_count = 0;
     int duration_ms = 0;
+};
+
+/**
+ * Encoder tuning. Defaults reproduce the historical batch-encode behaviour
+ * (CBR, kf every 30 frames) except that encoding is now multi-threaded.
+ */
+struct EncoderOptions {
+    int cpu_used = 8;          // VP9 -cpu-used: 0 = best quality, 8 = fastest (realtime)
+    int bitrate_kbps = 4000;   // target (CBR/VBR) or ceiling (CQ)
+    int threads = 0;           // 0 = auto (hw cores, capped at 8)
+    int kf_max_dist = 30;      // max frames between keyframes
+    int rc_mode = 0;           // 0 = CBR, 1 = VBR, 2 = CQ (constrained quality)
+    int cq_level = 32;         // 0..63, only used when rc_mode == 2 (lower = better)
+    int min_quantizer = -1;    // -1 = libvpx default
+    int max_quantizer = -1;    // -1 = libvpx default
+};
+
+/**
+ * Streaming VP9/WebM encoder. Frames are fed one at a time — encode cost is
+ * paid per add_frame() call instead of one giant blocking batch, and only a
+ * single I420 scratch image is alive at any moment.
+ *
+ * Lifetime: create() → add_frame()* → finish() (flushes + finalizes the
+ * container, invalidates the encoder) → destroy. Not thread-safe
+ * (single-producer, like a Java OutputStream).
+ */
+class Encoder {
+public:
+    static Encoder* create(int width, int height, const EncoderOptions& opts);
+    ~Encoder();
+
+    Encoder(const Encoder&) = delete;
+    Encoder& operator=(const Encoder&) = delete;
+
+    /** argb: width*height little-endian ARGB words (Java TYPE_INT_ARGB). */
+    bool add_frame(const uint32_t* argb, int duration_ms);
+    /** rgba: width*height*4 bytes in R,G,B,A order (GL_RGBA readback). */
+    bool add_frame_rgba(const uint8_t* rgba, int duration_ms);
+
+    // Two-phase variant for JNI: load_*() only converts into the I420 scratch
+    // image (fast, safe under GetPrimitiveArrayCritical); encode_loaded() runs
+    // the actual VP9 encode after the critical region is released.
+    void load_argb(const uint32_t* argb);
+    void load_rgba(const uint8_t* rgba);
+    bool encode_loaded(int duration_ms);
+
+    /** Flush the codec, finalize the WebM container. Call exactly once. */
+    bool finish(std::vector<uint8_t>& out);
+
+    int width() const { return width_; }
+    int height() const { return height_; }
+
+private:
+    Encoder() = default;
+    bool init(int width, int height, const EncoderOptions& opts);
+    bool encode_current_image(int duration_ms);
+    bool drain_packets();
+
+    class Writer;
+    std::unique_ptr<Writer> writer_;
+
+    vpx_codec_ctx_t codec_{};
+    bool codec_inited_ = false;
+    vpx_image_t img_{};
+    bool img_inited_ = false;
+
+    int width_ = 0;
+    int height_ = 0;
+    uint64_t track_ = 0;
+    int64_t pts_ms_ = 0;
+    bool finished_ = false;
 };
 
 /** Encode VP9/WebM (no audio). durations_ms length must equal frames.size(). */

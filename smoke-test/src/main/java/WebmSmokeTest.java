@@ -1,5 +1,6 @@
 import gg.norisk.webm.WebM;
 import gg.norisk.webm.WebMDecoder;
+import gg.norisk.webm.WebMEncoder;
 import gg.norisk.webm.WebMFrame;
 import gg.norisk.webm.WebMInfo;
 
@@ -33,6 +34,7 @@ public class WebmSmokeTest {
         fidelityScenario();   // small clip, strict pixel-fidelity gate
         realisticScenario();  // 720p clip, throughput + proves decode stays lazy
         oddDimensionScenario(); // odd w/h — regression guard for the chroma-overflow crash
+        streamingScenario();  // WebMEncoder: per-frame feed, int[] + direct-RGBA paths
 
         System.out.println("\nWEBM SMOKE TEST PASSED.");
     }
@@ -211,6 +213,80 @@ public class WebmSmokeTest {
             if (n < N - 2) fail("odd-dim: decoded too few frames (" + n + ")");
         }
         System.out.println("[odd] roundtrip ok");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Scenario 4 — streaming encoder. Feeds frames one at a time through
+    //  WebMEncoder (the capture-while-encoding path), via both the int[]
+    //  ARGB and the direct-ByteBuffer RGBA entry points, and checks the
+    //  results decode with the same fidelity as the batch API.
+    // ─────────────────────────────────────────────────────────────────
+    private static void streamingScenario() throws Exception {
+        final int W = 1280, H = 720, N = 80;  // 4s @ 20fps — the McReal capture shape
+        System.out.println("\n=== streaming scenario: " + W + "x" + H + ", " + N + " frames ===");
+
+        // int[] ARGB path.
+        long maxAddNs = 0, totalAddNs = 0;
+        byte[] webm;
+        try (WebMEncoder enc = WebMEncoder.create(W, H, WebMEncoder.Options.realtime())) {
+            for (int i = 0; i < N; i++) {
+                int[] argb = ((DataBufferInt) makeFrame(W, H, i, N).getRaster().getDataBuffer()).getData();
+                long t0 = System.nanoTime();
+                enc.addFrame(argb, FRAME_MS);
+                long dt = System.nanoTime() - t0;
+                maxAddNs = Math.max(maxAddNs, dt);
+                totalAddNs += dt;
+            }
+            webm = enc.finish();
+        }
+        System.out.printf("[streaming] argb: %d bytes, addFrame avg=%.2f ms, max=%.2f ms%n",
+            webm.length, totalAddNs / (N * 1_000_000.0), maxAddNs / 1_000_000.0);
+        writeFile("webm-smoke-test-streaming.webm", webm);
+        assertStreamFidelity(webm, W, H, N, "argb");
+
+        // Direct-ByteBuffer RGBA path (the GL-readback shape: R,G,B,A bytes).
+        java.nio.ByteBuffer rgba = java.nio.ByteBuffer.allocateDirect(W * H * 4);
+        try (WebMEncoder enc = WebMEncoder.create(W, H, WebMEncoder.Options.realtime())) {
+            for (int i = 0; i < N; i++) {
+                int[] argb = ((DataBufferInt) makeFrame(W, H, i, N).getRaster().getDataBuffer()).getData();
+                rgba.clear();
+                for (int p = 0; p < W * H; p++) {
+                    int v = argb[p];
+                    rgba.put((byte) (v >> 16)).put((byte) (v >> 8)).put((byte) v).put((byte) (v >> 24));
+                }
+                enc.addFrameRgba(rgba, FRAME_MS);
+            }
+            webm = enc.finish();
+        }
+        System.out.println("[streaming] rgba: " + webm.length + " bytes");
+        assertStreamFidelity(webm, W, H, N, "rgba");
+    }
+
+    private static void assertStreamFidelity(byte[] webm, int w, int h, int n, String tag) throws Exception {
+        try (WebMDecoder decoder = WebM.decode(webm)) {
+            WebMInfo info = decoder.info();
+            if (info.frameCount() < n - 2) fail(tag + ": expected ~" + n + " frames, got " + info.frameCount());
+            if (info.width() != w || info.height() != h) fail(tag + ": unexpected video size " + info);
+            int frameIdx = 0;
+            long totalBad = 0, totalAbsErr = 0, spotChannels = 0;
+            while (decoder.hasMoreFrames() && frameIdx < n) {
+                WebMFrame frame = decoder.nextFrame();
+                if (frameIdx % 20 == 0) {
+                    long[] d = diff(makeFrame(w, h, frameIdx, n), frame.image());
+                    totalBad += d[0];
+                    totalAbsErr += d[1];
+                    spotChannels += (long) w * h * 3;
+                }
+                frameIdx++;
+            }
+            if (frameIdx < n - 2) fail(tag + ": decoded too few frames (" + frameIdx + ")");
+            double badRatio = (double) totalBad / ((double) spotChannels / 3.0);
+            double meanErr = (double) totalAbsErr / (double) spotChannels;
+            System.out.printf("[streaming] %s fidelity: bad-pixel ratio=%.4f, mean abs err=%.3f/ch%n",
+                tag, badRatio, meanErr);
+            if (badRatio > MAX_BAD_PIXEL_RATIO) fail(tag + ": too many off-tolerance pixels: " + badRatio);
+            if (meanErr > MAX_MEAN_ABS_ERROR) fail(tag + ": mean per-channel error too high: " + meanErr);
+        }
     }
 
     private static BufferedImage makeFrame(int w, int h, int index, int total) {

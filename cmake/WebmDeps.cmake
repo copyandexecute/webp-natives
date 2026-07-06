@@ -45,6 +45,25 @@ add_library(webm_vpx INTERFACE)
 target_include_directories(webm_vpx INTERFACE "${VPX_INCLUDE_DIR}")
 target_link_libraries(webm_vpx INTERFACE "${VPX_LIBRARY}")
 
+# ── libyuv (vcpkg) ────────────────────────────────────────────────
+# SIMD ARGB<->I420 conversion for the encode/decode hot path.
+find_path(YUV_INCLUDE_DIR
+    NAMES libyuv.h
+    DOC "libyuv include directory (provided by vcpkg)")
+find_library(YUV_LIBRARY
+    NAMES yuv libyuv
+    DOC "libyuv static library (provided by vcpkg)")
+
+if (NOT YUV_INCLUDE_DIR OR NOT YUV_LIBRARY)
+    message(FATAL_ERROR
+        "libyuv not found, but WebM (VP9) is enabled. It is resolved from the "
+        "same vcpkg manifest as libvpx — re-run the vcpkg install / CMake "
+        "configure, or build WebP-only with -Pwebm=false / -DWEBM_ENABLED=OFF.")
+endif()
+
+target_include_directories(webm_vpx INTERFACE "${YUV_INCLUDE_DIR}")
+target_link_libraries(webm_vpx INTERFACE "${YUV_LIBRARY}")
+
 # libvpx's static archive pulls in libm / pthreads / libdl on POSIX.
 if (UNIX)
     find_package(Threads REQUIRED)

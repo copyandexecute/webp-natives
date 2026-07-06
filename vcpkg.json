@@ -1,7 +1,8 @@
 {
-  "$comment": "VP9 codec for the WebM stack. libvpx has no CMake build of its own; vcpkg's port handles the autotools/NASM/per-arch-target mess for us. libwebm is fetched separately via FetchContent (no vcpkg port exists). No builtin-baseline: we resolve libvpx from whatever vcpkg checkout the build uses (the runner's preinstalled vcpkg, or VCPKG_ROOT). To pin exactly, vendor vcpkg as a submodule and add its commit as builtin-baseline.",
+  "$comment": "VP9 codec for the WebM stack. libvpx has no CMake build of its own; vcpkg's port handles the autotools/NASM/per-arch-target mess for us. libyuv provides SIMD RGB<->I420 conversion for the encoder/decoder hot path. libwebm is fetched separately via FetchContent (no vcpkg port exists). No builtin-baseline: we resolve deps from whatever vcpkg checkout the build uses (the runner's preinstalled vcpkg, or VCPKG_ROOT). To pin exactly, vendor vcpkg as a submodule and add its commit as builtin-baseline.",
   "name": "webp-natives",
   "dependencies": [
-    "libvpx"
+    "libvpx",
+    "libyuv"
   ]
 }

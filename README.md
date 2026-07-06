@@ -162,7 +162,16 @@ The native library is rebuilt via CMake (libwebp v1.6.0 fetched as a
 import gg.norisk.webm.*;
 import java.awt.image.BufferedImage;
 
-// Encode a sequence of TYPE_INT_ARGB frames to a VP9/WebM byte[].
+// Streaming encode — feed frames as they are captured. Multi-threaded VP9
+// (row-mt + tile columns), SIMD colour conversion (libyuv), constrained-
+// quality rate control. Only one frame is buffered natively at a time.
+try (WebMEncoder enc = WebMEncoder.create(1280, 720, WebMEncoder.Options.realtime())) {
+    enc.addFrame(argbPixels, 50);          // int[] TYPE_INT_ARGB layout
+    enc.addFrameRgba(directRgbaBuffer, 50); // or zero-copy GL_RGBA readback
+    byte[] webm = enc.finish();
+}
+
+// Batch encode a sequence of TYPE_INT_ARGB frames to a VP9/WebM byte[].
 BufferedImage[] frames = ...;
 int[] durationsMs = ...;            // one per frame
 byte[] webm = WebM.encodeFast(frames, durationsMs);
