@@ -15,3 +15,7 @@ cmake_install.cmake
 # vcpkg manifest install tree (libvpx) — created under each module's CMake
 # binary dir, regenerated from vcpkg.json on configure.
 vcpkg_installed/
+
+# Local test staging (CI artifact downloads + staged natives for local publish)
+ci-artifacts/
+webp-natives-*/src/main/resources/native/
