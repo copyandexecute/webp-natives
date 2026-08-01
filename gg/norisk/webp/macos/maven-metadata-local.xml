@@ -3,11 +3,11 @@
   <groupId>gg.norisk.webp</groupId>
   <artifactId>macos</artifactId>
   <versioning>
-    <latest>26.3.4-main</latest>
-    <release>26.3.4-main</release>
+    <latest>26.3.5-main</latest>
+    <release>26.3.5-main</release>
     <versions>
-      <version>26.3.4-main</version>
+      <version>26.3.5-main</version>
     </versions>
-    <lastUpdated>20260706103603</lastUpdated>
+    <lastUpdated>20260801184227</lastUpdated>
   </versioning>
 </metadata>
