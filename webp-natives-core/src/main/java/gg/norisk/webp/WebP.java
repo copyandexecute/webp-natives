@@ -42,10 +42,20 @@ public final class WebP {
         return NativeLoader.tryLoad();
     }
 
-    /** Cheap magic-bytes check: does {@code data} start with a valid WEBP RIFF header? */
+    /**
+     * Cheap magic-bytes check: does {@code data} start with a valid WEBP RIFF header?
+     *
+     * <p>Deliberately pure Java. Callers use this to decide whether to enter the
+     * native path at all, so routing it through JNI would make it throw on exactly
+     * the hosts where the answer matters most — and a caller that swallows that
+     * failure sees every webp reported as "not webp". The native counterpart
+     * compares the same eight bytes, but copies the whole array across the JNI
+     * boundary to do it.
+     */
     public static boolean isWebP(byte[] data) {
         if (data == null || data.length < 12) return false;
-        return WebPNative.isWebP(data);
+        return data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
+            && data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P';
     }
 
     /** @return {@code {width, height}} for the given WEBP bytes, or {@code null} if invalid. */

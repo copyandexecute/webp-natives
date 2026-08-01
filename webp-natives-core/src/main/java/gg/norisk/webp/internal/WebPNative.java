@@ -29,6 +29,13 @@ public final class WebPNative {
 
     private WebPNative() {}
 
+    /**
+     * Superseded by {@link gg.norisk.webp.WebP#isWebP(byte[])}, which does the
+     * same eight-byte header comparison in Java. Kept only so the symbol stays
+     * bound; do not route the facade back through here — touching this class
+     * runs the loader in its static initialiser, which is precisely what a
+     * format sniff must not require.
+     */
     public static native boolean isWebP(byte[] data);
     public static native int[] getInfo(byte[] data);
 
