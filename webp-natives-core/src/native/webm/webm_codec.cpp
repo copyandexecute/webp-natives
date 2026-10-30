@@ -321,9 +321,11 @@ bool encode_vp9(const std::vector<std::vector<uint32_t>>& frames,
 //  Streaming decoder
 // ─────────────────────────────────────────────────────────────────
 
-Decoder* Decoder::open(const uint8_t* data, size_t size, int max_width, int max_height) {
+Decoder* Decoder::open(const uint8_t* data, size_t size, int max_width, int max_height,
+                       PixelLayout layout) {
     if (data == nullptr || size == 0) return nullptr;
     auto* d = new Decoder();
+    d->layout_ = layout;
     if (!d->init(data, size, max_width, max_height)) {
         delete d;
         return nullptr;
@@ -519,12 +521,22 @@ void Decoder::decode_one_packet() {
 
         fr.width = out_w;
         fr.height = out_h;
-        fr.argb.resize(static_cast<size_t>(out_w) * out_h * 4);
-        // libyuv writes B,G,R,A bytes ("ARGB" fourcc) — a Java TYPE_INT_ARGB
-        // int[] on little-endian, matching the historical scalar output.
-        libyuv::I420ToARGB(y, y_stride, u, uv_stride, v, uv_stride,
-                           fr.argb.data(), out_w * 4,
-                           out_w, out_h);
+        if (!spare_pixels_.empty()) {
+            fr.pixels = std::move(spare_pixels_.back());
+            spare_pixels_.pop_back();
+        }
+        fr.pixels.resize(static_cast<size_t>(out_w) * out_h * 4);
+        if (layout_ == PixelLayout::RGBA) {
+            libyuv::I420ToABGR(y, y_stride, u, uv_stride, v, uv_stride,
+                               fr.pixels.data(), out_w * 4,
+                               out_w, out_h);
+        } else {
+            // libyuv writes B,G,R,A bytes ("ARGB" fourcc) — a Java TYPE_INT_ARGB
+            // int[] on little-endian, matching the historical scalar output.
+            libyuv::I420ToARGB(y, y_stride, u, uv_stride, v, uv_stride,
+                               fr.pixels.data(), out_w * 4,
+                               out_w, out_h);
+        }
         pending_.push_back(std::move(fr));
     }
 }
@@ -533,17 +545,34 @@ void Decoder::fill_pending() {
     while (pending_.empty() && !cursor_done_) decode_one_packet();
 }
 
+void Decoder::stamp(WebMFrame& frame) {
+    if (out_index_ < static_cast<int>(frame_ts_ms_.size())) {
+        frame.timestamp_ms = frame_ts_ms_[out_index_];
+        frame.duration_ms = frame_duration_ms(out_index_);
+    }
+    ++out_index_;
+}
+
 bool Decoder::next(WebMFrame& out) {
     if (pending_.empty()) return false;
     out = std::move(pending_.front());
     pending_.pop_front();
-    if (out_index_ < static_cast<int>(frame_ts_ms_.size())) {
-        out.timestamp_ms = frame_ts_ms_[out_index_];
-        out.duration_ms = frame_duration_ms(out_index_);
-    }
-    ++out_index_;
+    stamp(out);
     fill_pending();  // keep one frame buffered so has_more() stays accurate
     return true;
+}
+
+NextResult Decoder::next_into(uint8_t* dst, size_t capacity, int& duration_ms) {
+    if (pending_.empty()) return NextResult::Drained;
+    WebMFrame& front = pending_.front();
+    if (front.pixels.size() > capacity) return NextResult::BufferTooSmall;
+    stamp(front);
+    std::memcpy(dst, front.pixels.data(), front.pixels.size());
+    duration_ms = front.duration_ms;
+    spare_pixels_.push_back(std::move(front.pixels));
+    pending_.pop_front();
+    fill_pending();
+    return NextResult::Ok;
 }
 
 }  // namespace webm_codec

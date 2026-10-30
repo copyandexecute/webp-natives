@@ -71,9 +71,13 @@ public final class WebM {
 
     /** Decode with a decode-time downscale — see {@link WebMDecoder#open(byte[], int, int)}. */
     public static WebMDecoder decode(byte[] data, int maxWidth, int maxHeight) throws WebMException {
+        return decode(data, maxWidth, maxHeight, PixelLayout.ARGB_INT);
+    }
+
+    public static WebMDecoder decode(byte[] data, int maxWidth, int maxHeight, PixelLayout layout) throws WebMException {
         if (!isSupported()) {
             throw new WebMException("WebM native library is not available for this OS/arch");
         }
-        return WebMDecoder.open(data, maxWidth, maxHeight);
+        return WebMDecoder.open(data, maxWidth, maxHeight, layout);
     }
 }

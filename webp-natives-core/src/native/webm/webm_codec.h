@@ -12,8 +12,19 @@
 
 namespace webm_codec {
 
+enum class PixelLayout : int {
+    ARGB = 0,
+    RGBA = 1,
+};
+
+enum class NextResult {
+    Ok,
+    Drained,
+    BufferTooSmall,
+};
+
 struct WebMFrame {
-    std::vector<uint8_t> argb;
+    std::vector<uint8_t> pixels;
     int width = 0;
     int height = 0;
     int duration_ms = 0;
@@ -123,7 +134,8 @@ public:
      * the ARGB conversion — info() and frames report the scaled size.
      */
     static Decoder* open(const uint8_t* data, size_t size,
-                         int max_width = 0, int max_height = 0);
+                         int max_width = 0, int max_height = 0,
+                         PixelLayout layout = PixelLayout::ARGB);
     ~Decoder();
 
     Decoder(const Decoder&) = delete;
@@ -137,6 +149,8 @@ public:
     /** Decode/return the next frame. Returns false once the stream is drained. */
     bool next(WebMFrame& out);
 
+    NextResult next_into(uint8_t* dst, size_t capacity, int& duration_ms);
+
 private:
     Decoder() = default;
 
@@ -146,6 +160,7 @@ private:
     void decode_one_packet();
     void fill_pending();
     int frame_duration_ms(int index) const;
+    void stamp(WebMFrame& frame);
 
     std::vector<uint8_t> buffer_;             // owned copy of the input stream
     mkvparser::IMkvReader* reader_ = nullptr; // reads from buffer_
@@ -168,6 +183,8 @@ private:
     int frame_in_block_ = 0;
     bool cursor_done_ = false;
 
+    PixelLayout layout_ = PixelLayout::ARGB;
+    std::vector<std::vector<uint8_t>> spare_pixels_;
     std::deque<WebMFrame> pending_;           // decoded-but-not-yet-returned images
     int out_index_ = 0;                       // index of the next frame next() will return
 };

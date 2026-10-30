@@ -157,7 +157,7 @@ Java_gg_norisk_webm_internal_WebMNative_encodeVp9(JNIEnv* env, jclass cls,
 
 JNIEXPORT jlong JNICALL
 Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyteArray data,
-                                                    jint maxWidth, jint maxHeight) {
+                                                    jint maxWidth, jint maxHeight, jint layout) {
     (void) cls;
     if (data == nullptr) return 0;
     const jsize len = env->GetArrayLength(data);
@@ -168,7 +168,9 @@ Java_gg_norisk_webm_internal_WebMNative_decodeOpen(JNIEnv* env, jclass cls, jbyt
 
     webm_codec::Decoder* decoder = webm_codec::Decoder::open(
         reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len),
-        static_cast<int>(maxWidth), static_cast<int>(maxHeight));
+        static_cast<int>(maxWidth), static_cast<int>(maxHeight),
+        layout == static_cast<jint>(webm_codec::PixelLayout::RGBA) ? webm_codec::PixelLayout::RGBA
+                                                                     : webm_codec::PixelLayout::ARGB);
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
     if (decoder == nullptr) return 0;
@@ -216,10 +218,29 @@ Java_gg_norisk_webm_internal_WebMNative_decodeNextFrame(JNIEnv* env, jclass cls,
     if (pixels == nullptr) return nullptr;
 
     env->SetIntArrayRegion(pixels, 0, pixelCount,
-                           reinterpret_cast<const jint*>(frame.argb.data()));
+                           reinterpret_cast<const jint*>(frame.pixels.data()));
     jint meta[2] = { frame.duration_ms, frame.timestamp_ms };
     env->SetIntArrayRegion(pixels, pixelCount, 2, meta);
     return pixels;
+}
+
+JNIEXPORT jint JNICALL
+Java_gg_norisk_webm_internal_WebMNative_decodeNextFrameInto(JNIEnv* env, jclass cls, jlong handlePtr,
+                                                            jobject dst) {
+    (void) cls;
+    if (handlePtr == 0 || dst == nullptr) return -2;
+    auto* address = static_cast<uint8_t*>(env->GetDirectBufferAddress(dst));
+    const jlong capacity = env->GetDirectBufferCapacity(dst);
+    if (address == nullptr || capacity <= 0) return -2;
+
+    auto* decoder = reinterpret_cast<webm_codec::Decoder*>(handlePtr);
+    int duration_ms = 0;
+    switch (decoder->next_into(address, static_cast<size_t>(capacity), duration_ms)) {
+        case webm_codec::NextResult::Ok: return duration_ms;
+        case webm_codec::NextResult::Drained: return -1;
+        case webm_codec::NextResult::BufferTooSmall: return -2;
+    }
+    return -2;
 }
 
 JNIEXPORT void JNICALL

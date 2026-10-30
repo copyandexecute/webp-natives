@@ -185,6 +185,24 @@ try (WebMDecoder decoder = WebM.decode(webm)) {
 }
 ```
 
+For playback loops, decode into one reused direct buffer instead — no
+`int[]` or `BufferedImage` is allocated per frame, and `RGBA_BYTES` matches
+the memory layout of a GL_RGBA texture (e.g. Minecraft's `NativeImage`), so
+the frame can be memcpy'd straight in:
+
+```java
+try (WebMDecoder decoder = WebM.decode(webm, 640, 360, PixelLayout.RGBA_BYTES)) {
+    WebMInfo info = decoder.info();
+    ByteBuffer pixels = ByteBuffer.allocateDirect(info.width() * info.height() * 4);
+    while (decoder.hasMoreFrames()) {
+        int durationMs = decoder.nextFrameInto(pixels); // R,G,B,A bytes
+    }
+}
+```
+
+`PixelLayout.ARGB_INT` fills the buffer with little-endian `TYPE_INT_ARGB`
+words instead. `nextFrame()` only works on `ARGB_INT` decoders.
+
 `WebM.isSupported()` reports whether the native loaded for this OS/arch.
 
 ## License

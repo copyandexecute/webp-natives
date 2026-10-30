@@ -38,13 +38,15 @@ public final class WebMNative {
 
     public static native void encoderClose(long handle);
 
-    public static native long decodeOpen(byte[] data, int maxWidth, int maxHeight);
+    public static native long decodeOpen(byte[] data, int maxWidth, int maxHeight, int layout);
 
     public static native int[] decodeGetInfo(long handle);
 
     public static native boolean decodeHasMoreFrames(long handle);
 
     public static native int[] decodeNextFrame(long handle);
+
+    public static native int decodeNextFrameInto(long handle, ByteBuffer dst);
 
     public static native void decodeClose(long handle);
 }

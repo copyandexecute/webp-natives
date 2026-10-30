@@ -4,16 +4,19 @@ import gg.norisk.webm.internal.WebMNative;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.nio.ByteBuffer;
 import java.util.NoSuchElementException;
 
 public final class WebMDecoder implements AutoCloseable {
 
     private long handle;
     private final WebMInfo info;
+    private final PixelLayout layout;
 
-    private WebMDecoder(long handle, WebMInfo info) {
+    private WebMDecoder(long handle, WebMInfo info, PixelLayout layout) {
         this.handle = handle;
         this.info = info;
+        this.layout = layout;
     }
 
     public static WebMDecoder open(byte[] data) throws WebMException {
@@ -27,10 +30,17 @@ public final class WebMDecoder implements AutoCloseable {
      * scaled size. Pass 0/0 for native size.
      */
     public static WebMDecoder open(byte[] data, int maxWidth, int maxHeight) throws WebMException {
+        return open(data, maxWidth, maxHeight, PixelLayout.ARGB_INT);
+    }
+
+    public static WebMDecoder open(byte[] data, int maxWidth, int maxHeight, PixelLayout layout) throws WebMException {
         if (data == null || data.length == 0) {
             throw new WebMException("input bytes are null or empty");
         }
-        long h = WebMNative.decodeOpen(data, maxWidth, maxHeight);
+        if (layout == null) {
+            throw new IllegalArgumentException("layout is null");
+        }
+        long h = WebMNative.decodeOpen(data, maxWidth, maxHeight, layout.nativeId());
         if (h == 0L) {
             throw new WebMException("Failed to open WebM (not a valid VP9/WebM stream)");
         }
@@ -40,7 +50,7 @@ public final class WebMDecoder implements AutoCloseable {
             throw new WebMException("Failed to read WebM info");
         }
         WebMInfo info = new WebMInfo(raw[0], raw[1], raw[2], raw[3]);
-        return new WebMDecoder(h, info);
+        return new WebMDecoder(h, info, layout);
     }
 
     public WebMInfo info() {
@@ -51,7 +61,14 @@ public final class WebMDecoder implements AutoCloseable {
         return handle != 0L && WebMNative.decodeHasMoreFrames(handle);
     }
 
+    public PixelLayout layout() {
+        return layout;
+    }
+
     public WebMFrame nextFrame() throws WebMException {
+        if (layout != PixelLayout.ARGB_INT) {
+            throw new IllegalStateException("nextFrame() needs PixelLayout.ARGB_INT, use nextFrameInto() for " + layout);
+        }
         if (handle == 0L) throw new WebMException("decoder is closed");
         if (!WebMNative.decodeHasMoreFrames(handle)) {
             throw new NoSuchElementException("no more frames");
@@ -77,6 +94,18 @@ public final class WebMDecoder implements AutoCloseable {
         int[] pixels = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
         System.arraycopy(packed, 0, pixels, 0, w * h);
         return new WebMFrame(img, durationMs, timestampMs);
+    }
+
+    public int nextFrameInto(ByteBuffer dst) throws WebMException {
+        int needed = info.width() * info.height() * 4;
+        if (dst == null || !dst.isDirect() || dst.capacity() < needed) {
+            throw new IllegalArgumentException("nextFrameInto() needs a direct buffer of at least " + needed + " bytes");
+        }
+        if (handle == 0L) throw new WebMException("decoder is closed");
+        int result = WebMNative.decodeNextFrameInto(handle, dst);
+        if (result == -1) throw new NoSuchElementException("no more frames");
+        if (result < 0) throw new WebMException("Decoded frame does not fit the buffer");
+        return result;
     }
 
     @Override

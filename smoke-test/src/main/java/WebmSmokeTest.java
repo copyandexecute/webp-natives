@@ -3,11 +3,16 @@ import gg.norisk.webm.WebMDecoder;
 import gg.norisk.webm.WebMEncoder;
 import gg.norisk.webm.WebMFrame;
 import gg.norisk.webm.WebMInfo;
+import gg.norisk.webm.PixelLayout;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 
 public class WebmSmokeTest {
 
@@ -36,6 +41,7 @@ public class WebmSmokeTest {
         oddDimensionScenario(); // odd w/h — regression guard for the chroma-overflow crash
         streamingScenario();  // WebMEncoder: per-frame feed, int[] + direct-RGBA paths
         scaledDecodeScenario(); // decode-time YUV downscale
+        bufferDecodeScenario();
 
         System.out.println("\nWEBM SMOKE TEST PASSED.");
     }
@@ -340,6 +346,87 @@ public class WebmSmokeTest {
             System.out.printf("[scaled] frames=%d, spot mean abs err=%.2f/ch%n", n, meanErr);
             if (meanErr > 26.0) fail("scaled: pixels drifted too far from source: " + meanErr);
         }
+    }
+
+    private static void bufferDecodeScenario() throws Exception {
+        final int W = 330, H = 186, N = 12, TW = 165, TH = 93;
+        System.out.println("\n=== buffer-decode scenario: " + W + "x" + H + " -> max " + TW + "x" + TH + " ===");
+
+        BufferedImage[] frames = new BufferedImage[N];
+        int[] durationsMs = new int[N];
+        for (int i = 0; i < N; i++) {
+            frames[i] = makeFrame(W, H, i, N);
+            durationsMs[i] = FRAME_MS + (i % 3) * 10;
+        }
+        byte[] webm = WebM.encodeFast(frames, durationsMs);
+
+        List<int[]> expectedPixels = new ArrayList<>();
+        List<Integer> expectedDurations = new ArrayList<>();
+        try (WebMDecoder decoder = WebM.decode(webm, TW, TH)) {
+            while (decoder.hasMoreFrames()) {
+                WebMFrame frame = decoder.nextFrame();
+                expectedPixels.add(((DataBufferInt) frame.image().getRaster().getDataBuffer()).getData().clone());
+                expectedDurations.add(frame.durationMs());
+            }
+        }
+        if (expectedPixels.size() < N - 2) fail("buffer: reference decode returned too few frames (" + expectedPixels.size() + ")");
+
+        for (PixelLayout layout : PixelLayout.values()) {
+            try (WebMDecoder decoder = WebM.decode(webm, TW, TH, layout)) {
+                WebMInfo info = decoder.info();
+                if (info.width() != TW || info.height() != TH) fail("buffer/" + layout + ": unexpected size " + info);
+                ByteBuffer buffer = ByteBuffer.allocateDirect(TW * TH * 4);
+                int n = 0;
+                while (decoder.hasMoreFrames()) {
+                    int duration = decoder.nextFrameInto(buffer);
+                    if (n >= expectedPixels.size()) fail("buffer/" + layout + ": more frames than nextFrame() delivered");
+                    if (duration != expectedDurations.get(n)) {
+                        fail("buffer/" + layout + ": frame " + n + " duration " + duration + " != " + expectedDurations.get(n));
+                    }
+                    int[] expected = expectedPixels.get(n);
+                    for (int i = 0; i < TW * TH; i++) {
+                        int actual = readPixel(buffer, i, layout);
+                        if (actual != expected[i]) {
+                            fail("buffer/" + layout + ": frame " + n + " pixel " + i + " = "
+                                + Integer.toHexString(actual) + ", expected " + Integer.toHexString(expected[i]));
+                        }
+                    }
+                    n++;
+                }
+                if (n != expectedPixels.size()) fail("buffer/" + layout + ": decoded " + n + " frames, expected " + expectedPixels.size());
+                System.out.println("[buffer] " + layout + ": " + n + " frames identical to nextFrame()");
+            }
+        }
+
+        try (WebMDecoder decoder = WebM.decode(webm, TW, TH, PixelLayout.RGBA_BYTES)) {
+            expectThrows(IllegalStateException.class, "nextFrame() on an RGBA_BYTES decoder", decoder::nextFrame);
+            expectThrows(IllegalArgumentException.class, "a buffer that is too small",
+                () -> decoder.nextFrameInto(ByteBuffer.allocateDirect(TW * TH * 4 - 1)));
+            expectThrows(IllegalArgumentException.class, "a heap buffer",
+                () -> decoder.nextFrameInto(ByteBuffer.allocate(TW * TH * 4)));
+        }
+        System.out.println("[buffer] misuse rejected");
+    }
+
+    private static int readPixel(ByteBuffer buffer, int index, PixelLayout layout) {
+        int o = index * 4;
+        if (layout == PixelLayout.ARGB_INT) return buffer.order(ByteOrder.LITTLE_ENDIAN).getInt(o);
+        int r = buffer.get(o) & 0xFF, g = buffer.get(o + 1) & 0xFF, b = buffer.get(o + 2) & 0xFF, a = buffer.get(o + 3) & 0xFF;
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private static void expectThrows(Class<? extends Throwable> type, String what, ThrowingRunnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            fail("expected " + type.getSimpleName() + " for " + what + ", got " + t);
+        }
+        fail("expected " + type.getSimpleName() + " for " + what + ", nothing was thrown");
     }
 
     private static BufferedImage makeFrame(int w, int h, int index, int total) {
