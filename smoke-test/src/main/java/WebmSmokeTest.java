@@ -374,8 +374,9 @@ public class WebmSmokeTest {
         for (PixelLayout layout : PixelLayout.values()) {
             try (WebMDecoder decoder = WebM.decode(webm, TW, TH, layout)) {
                 WebMInfo info = decoder.info();
-                if (info.width() != TW || info.height() != TH) fail("buffer/" + layout + ": unexpected size " + info);
-                ByteBuffer buffer = ByteBuffer.allocateDirect(TW * TH * 4);
+                int pixelCount = info.width() * info.height();
+                if (info.width() > TW || info.height() > TH) fail("buffer/" + layout + ": size " + info + " exceeds " + TW + "x" + TH);
+                ByteBuffer buffer = ByteBuffer.allocateDirect(pixelCount * 4);
                 int n = 0;
                 while (decoder.hasMoreFrames()) {
                     int duration = decoder.nextFrameInto(buffer);
@@ -384,7 +385,8 @@ public class WebmSmokeTest {
                         fail("buffer/" + layout + ": frame " + n + " duration " + duration + " != " + expectedDurations.get(n));
                     }
                     int[] expected = expectedPixels.get(n);
-                    for (int i = 0; i < TW * TH; i++) {
+                    if (expected.length != pixelCount) fail("buffer/" + layout + ": frame " + n + " has " + expected.length + " reference pixels, expected " + pixelCount);
+                    for (int i = 0; i < pixelCount; i++) {
                         int actual = readPixel(buffer, i, layout);
                         if (actual != expected[i]) {
                             fail("buffer/" + layout + ": frame " + n + " pixel " + i + " = "
@@ -399,11 +401,12 @@ public class WebmSmokeTest {
         }
 
         try (WebMDecoder decoder = WebM.decode(webm, TW, TH, PixelLayout.RGBA_BYTES)) {
+            int bytes = decoder.info().width() * decoder.info().height() * 4;
             expectThrows(IllegalStateException.class, "nextFrame() on an RGBA_BYTES decoder", decoder::nextFrame);
             expectThrows(IllegalArgumentException.class, "a buffer that is too small",
-                () -> decoder.nextFrameInto(ByteBuffer.allocateDirect(TW * TH * 4 - 1)));
+                () -> decoder.nextFrameInto(ByteBuffer.allocateDirect(bytes - 1)));
             expectThrows(IllegalArgumentException.class, "a heap buffer",
-                () -> decoder.nextFrameInto(ByteBuffer.allocate(TW * TH * 4)));
+                () -> decoder.nextFrameInto(ByteBuffer.allocate(bytes)));
         }
         System.out.println("[buffer] misuse rejected");
     }
