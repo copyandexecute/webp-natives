@@ -3,11 +3,11 @@
   <groupId>gg.norisk.webp</groupId>
   <artifactId>all</artifactId>
   <versioning>
-    <latest>26.4.2-main</latest>
-    <release>26.4.2-main</release>
+    <latest>26.4.4-main</latest>
+    <release>26.4.4-main</release>
     <versions>
-      <version>26.4.2-main</version>
+      <version>26.4.4-main</version>
     </versions>
-    <lastUpdated>20261030165606</lastUpdated>
+    <lastUpdated>20261113130137</lastUpdated>
   </versioning>
 </metadata>
