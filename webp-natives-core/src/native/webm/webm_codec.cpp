@@ -75,6 +75,33 @@ private:
     size_t size_;
 };
 
+using YuvToArgb = int (*)(const uint8_t*, int, const uint8_t*, int, const uint8_t*, int,
+                          uint8_t*, int, const libyuv::YuvConstants*, int, int);
+
+YuvToArgb yuv_to_argb(vpx_img_fmt_t fmt) {
+    switch (fmt) {
+        case VPX_IMG_FMT_I420: return libyuv::I420ToARGBMatrix;
+        case VPX_IMG_FMT_I422: return libyuv::I422ToARGBMatrix;
+        case VPX_IMG_FMT_I444: return libyuv::I444ToARGBMatrix;
+        default: return nullptr;
+    }
+}
+
+const libyuv::YuvConstants* yuv_constants(const vpx_image_t* img, bool swap_uv) {
+    const bool full = img->range == VPX_CR_FULL_RANGE;
+    switch (img->cs) {
+        case VPX_CS_BT_709:
+            if (swap_uv) return full ? &libyuv::kYvuF709Constants : &libyuv::kYvuH709Constants;
+            return full ? &libyuv::kYuvF709Constants : &libyuv::kYuvH709Constants;
+        case VPX_CS_BT_2020:
+            if (swap_uv) return full ? &libyuv::kYvuV2020Constants : &libyuv::kYvu2020Constants;
+            return full ? &libyuv::kYuvV2020Constants : &libyuv::kYuv2020Constants;
+        default:
+            if (swap_uv) return full ? &libyuv::kYvuJPEGConstants : &libyuv::kYvuI601Constants;
+            return full ? &libyuv::kYuvJPEGConstants : &libyuv::kYuvI601Constants;
+    }
+}
+
 int auto_threads(int requested) {
     if (requested > 0) return std::min(requested, 16);
     const unsigned hw = std::thread::hardware_concurrency();
@@ -491,7 +518,8 @@ void Decoder::decode_one_packet() {
     vpx_codec_iter_t iter = nullptr;
     vpx_image_t* img;
     while ((img = vpx_codec_get_frame(&codec_, &iter)) != nullptr) {
-        if (img->fmt != VPX_IMG_FMT_I420) continue;
+        const YuvToArgb convert = yuv_to_argb(img->fmt);
+        if (convert == nullptr || img->cs == VPX_CS_SRGB) continue;
         WebMFrame fr;
 
         const uint8_t* y = img->planes[VPX_PLANE_Y];
@@ -501,19 +529,22 @@ void Decoder::decode_one_packet() {
         int uv_stride = img->stride[VPX_PLANE_U];
         int out_w = static_cast<int>(img->d_w);
         int out_h = static_cast<int>(img->d_h);
+        const int xs = static_cast<int>(img->x_chroma_shift);
+        const int ys = static_cast<int>(img->y_chroma_shift);
 
-        // Downscale on the YUV planes (1.5 bytes/px) before the ARGB blow-up —
-        // far cheaper than converting the full frame and scaling in ARGB.
+        // Downscale on the YUV planes before the ARGB blow-up — far cheaper
+        // than converting the full frame and scaling in ARGB.
         if (target_w_ > 0 && (out_w != target_w_ || out_h != target_h_)) {
             const int tw = target_w_, th = target_h_;
-            const int cw = (tw + 1) / 2, ch = (th + 1) / 2;
+            const int cw = (tw + xs) >> xs, ch = (th + ys) >> ys;
             scale_buf_.resize(static_cast<size_t>(tw) * th + 2u * cw * ch);
             uint8_t* sy = scale_buf_.data();
             uint8_t* su = sy + static_cast<size_t>(tw) * th;
             uint8_t* sv = su + static_cast<size_t>(cw) * ch;
-            libyuv::I420Scale(y, y_stride, u, uv_stride, v, uv_stride, out_w, out_h,
-                              sy, tw, su, cw, sv, cw, tw, th,
-                              libyuv::kFilterBilinear);
+            const int src_cw = (out_w + xs) >> xs, src_ch = (out_h + ys) >> ys;
+            libyuv::ScalePlane(y, y_stride, out_w, out_h, sy, tw, tw, th, libyuv::kFilterBilinear);
+            libyuv::ScalePlane(u, uv_stride, src_cw, src_ch, su, cw, cw, ch, libyuv::kFilterBilinear);
+            libyuv::ScalePlane(v, uv_stride, src_cw, src_ch, sv, cw, cw, ch, libyuv::kFilterBilinear);
             y = sy; u = su; v = sv;
             y_stride = tw; uv_stride = cw;
             out_w = tw; out_h = th;
@@ -527,15 +558,15 @@ void Decoder::decode_one_packet() {
         }
         fr.pixels.resize(static_cast<size_t>(out_w) * out_h * 4);
         if (layout_ == PixelLayout::RGBA) {
-            libyuv::I420ToABGR(y, y_stride, u, uv_stride, v, uv_stride,
-                               fr.pixels.data(), out_w * 4,
-                               out_w, out_h);
+            convert(y, y_stride, v, uv_stride, u, uv_stride,
+                    fr.pixels.data(), out_w * 4, yuv_constants(img, true),
+                    out_w, out_h);
         } else {
             // libyuv writes B,G,R,A bytes ("ARGB" fourcc) — a Java TYPE_INT_ARGB
             // int[] on little-endian, matching the historical scalar output.
-            libyuv::I420ToARGB(y, y_stride, u, uv_stride, v, uv_stride,
-                               fr.pixels.data(), out_w * 4,
-                               out_w, out_h);
+            convert(y, y_stride, u, uv_stride, v, uv_stride,
+                    fr.pixels.data(), out_w * 4, yuv_constants(img, false),
+                    out_w, out_h);
         }
         pending_.push_back(std::move(fr));
     }
