@@ -42,8 +42,78 @@ public class WebmSmokeTest {
         streamingScenario();  // WebMEncoder: per-frame feed, int[] + direct-RGBA paths
         scaledDecodeScenario(); // decode-time YUV downscale
         bufferDecodeScenario();
+        chromaFormatScenario();
 
         System.out.println("\nWEBM SMOKE TEST PASSED.");
+    }
+
+    private static final int FIXTURE_SIZE = 32;
+    private static final int FIXTURE_TOLERANCE = 6;
+    private static final int COLOR_A = 0xFF28C83C;
+    private static final int COLOR_B = 0xFFC828A0;
+
+    private interface FixturePattern {
+        int expected(int x, int y);
+    }
+
+    private static void chromaFormatScenario() throws Exception {
+        System.out.println("\n=== chroma-format scenario ===");
+        assertFixture("yuv444.webm", (x, y) -> x % 2 == 0 ? COLOR_A : COLOR_B);
+        assertFixture("yuv422.webm", (x, y) -> y % 2 == 0 ? COLOR_A : COLOR_B);
+        assertFixture("bt709.webm", (x, y) -> COLOR_A);
+        assertFixture("fullrange.webm", (x, y) -> COLOR_A);
+    }
+
+    private static void assertFixture(String name, FixturePattern pattern) throws Exception {
+        byte[] webm = readFixture(name);
+        for (PixelLayout layout : PixelLayout.values()) {
+            try (WebMDecoder decoder = WebM.decode(webm, 0, 0, layout)) {
+                WebMInfo info = decoder.info();
+                if (info.width() != FIXTURE_SIZE || info.height() != FIXTURE_SIZE) fail(name + "/" + layout + ": unexpected size " + info);
+                ByteBuffer buffer = ByteBuffer.allocateDirect(FIXTURE_SIZE * FIXTURE_SIZE * 4);
+                int frames = 0;
+                while (decoder.hasMoreFrames()) {
+                    decoder.nextFrameInto(buffer);
+                    for (int y = 0; y < FIXTURE_SIZE; y++) {
+                        for (int x = 0; x < FIXTURE_SIZE; x++) {
+                            int actual = readPixel(buffer, y * FIXTURE_SIZE + x, layout);
+                            int expected = pattern.expected(x, y);
+                            if (maxChannelDelta(expected, actual) > FIXTURE_TOLERANCE) {
+                                fail(name + "/" + layout + ": frame " + frames + " pixel " + x + "," + y + " = "
+                                    + Integer.toHexString(actual) + ", expected " + Integer.toHexString(expected));
+                            }
+                        }
+                    }
+                    frames++;
+                }
+                if (frames == 0) fail(name + "/" + layout + ": no frames decoded");
+                System.out.println("[chroma] " + name + " " + layout + ": " + frames + " frames match");
+            }
+        }
+        try (WebMDecoder decoder = WebM.decode(webm, FIXTURE_SIZE / 2, FIXTURE_SIZE / 2)) {
+            WebMInfo info = decoder.info();
+            if (info.width() != FIXTURE_SIZE / 2 || info.height() != FIXTURE_SIZE / 2) fail(name + ": scaled size " + info);
+            if (!decoder.hasMoreFrames()) fail(name + ": scaled decode produced no frames");
+            decoder.nextFrame();
+        }
+    }
+
+    private static int maxChannelDelta(int a, int b) {
+        int dr = Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF));
+        int dg = Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF));
+        int db = Math.abs((a & 0xFF) - (b & 0xFF));
+        return Math.max(dr, Math.max(dg, db));
+    }
+
+    private static byte[] readFixture(String name) throws Exception {
+        try (java.io.InputStream in = WebmSmokeTest.class.getResourceAsStream("/webm-fixtures/" + name)) {
+            if (in == null) fail("missing fixture " + name);
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[4096];
+            int read;
+            while ((read = in.read(chunk)) > 0) out.write(chunk, 0, read);
+            return out.toByteArray();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
