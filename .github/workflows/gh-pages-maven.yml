@@ -139,9 +139,9 @@ jobs:
     # Apple Silicon runner cross-compiling x86_64 via
     # -DCMAKE_OSX_ARCHITECTURES=x86_64. Universal builds break libwebp's
     # SSE2 per-file flags, but two separate single-arch builds work
-    # fine — and using macos-14 for both avoids the painfully long
+    # fine — and using macos-15 for both avoids the painfully long
     # macos-13 (Intel) runner queue.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -168,7 +168,7 @@ jobs:
           if-no-files-found: error
 
   natives-macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:

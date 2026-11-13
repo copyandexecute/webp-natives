@@ -46,14 +46,14 @@ jobs:
           # macos-latest is currently arm64. The dylib is a universal
           # binary (x86_64 + arm64 fat file) — Mac x64 hosts also get
           # the same artifact.
-          # macOS: both archs built on macos-14 (Apple Silicon, Xcode 15).
+          # macOS: both archs built on macos-15 (Apple Silicon).
           # Universal binary breaks libwebp's SSE2 per-file flags, but two
           # separate single-arch builds work fine — Apple Clang on the arm64
           # host cross-compiles x86_64 via -DCMAKE_OSX_ARCHITECTURES=x86_64.
           # Beats the alternative of waiting 30+ min in the rare macos-13
           # Intel runner queue.
-          - { runner: macos-14,         label: "macos / x64",       module: webp-natives-macos,  artifact: native-macos-x64,       resource-glob: "webp-natives-macos/build/resources/main/native/**" }
-          - { runner: macos-14,         label: "macos / arm64",     module: webp-natives-macos,  artifact: native-macos-arm64,     resource-glob: "webp-natives-macos/build/resources/main/native/**" }
+          - { runner: macos-15,         label: "macos / x64",       module: webp-natives-macos,  artifact: native-macos-x64,       resource-glob: "webp-natives-macos/build/resources/main/native/**" }
+          - { runner: macos-15,         label: "macos / arm64",     module: webp-natives-macos,  artifact: native-macos-arm64,     resource-glob: "webp-natives-macos/build/resources/main/native/**" }
 
     steps:
       - name: Checkout
